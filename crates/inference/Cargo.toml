@@ -1,0 +1,35 @@
+[package]
+name = "inference"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Core dependencies
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+
+# Internal UniLLM components
+kv = { path = "../kv" }
+scheduler = { path = "../scheduler" }
+kernels = { path = "../kernels" }
+
+# Async and concurrency
+futures = "0.3"
+async-trait = "0.1"
+
+# Performance monitoring
+tokio-metrics = "0.3"
+
+# Memory management
+bytemuck = "1.0"
+
+# Random generation for request IDs
+uuid = { version = "1.0", features = ["v4"] }
+
+[features]
+default = ["cuda", "hip"]
+cuda = ["kernels/cuda"]
+hip = ["kernels/hip"]
+benchmarking = []

@@ -1,0 +1,7 @@
+[package]
+name = "gpu-backend"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Common GPU backend dependencies will be added here

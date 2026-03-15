@@ -1,0 +1,119 @@
+[workspace]
+members = [
+    "crates/kv",
+    "crates/scheduler",
+    "crates/kernels",
+    "crates/inference",
+]
+resolver = "2"
+
+[workspace.dependencies]
+# Core dependencies
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+async-trait = "0.1"
+futures = "0.3"
+uuid = { version = "1.0", features = ["v4"] }
+
+# System and performance
+libc = "0.2"
+nix = "0.27"
+perf-event = "0.4"
+
+# GPU and acceleration
+libloading = "0.8"
+
+# Template engines
+handlebars = "4.5"
+tera = "1.19"
+
+# Random generation
+rand = "0.8"
+
+# Utilities
+bytemuck = "1.0"
+
+[package]
+name = "unillm"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance LLM inference engine with hybrid cache and GPU optimization"
+license = "Apache-2.0"
+repository = "https://github.com/unillm/unillm"
+keywords = ["llm", "inference", "gpu", "cache", "performance"]
+categories = ["science", "concurrency", "hardware-support"]
+
+[dependencies]
+# Internal crates
+kv = { path = "crates/kv" }
+scheduler = { path = "crates/scheduler" }
+kernels = { path = "crates/kernels" }
+inference = { path = "crates/inference" }
+
+# Core dependencies from workspace
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+clap = { version = "4.0", features = ["derive"] }
+
+# HTTP server for API
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "compression-br"] }
+
+# Tracing and logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+default = ["cuda", "hip"]
+cuda = ["kernels/cuda"]
+hip = ["kernels/hip"]
+benchmarking = ["inference/benchmarking"]
+
+# GPU vendor-specific features
+nvidia = ["cuda"]
+amd = ["hip"]
+
+# Optimization levels
+debug-optimizations = []
+release-optimizations = []
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+
+# GPU-optimized release profile
+[profile.gpu-optimized]
+inherits = "release"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+# Build script configuration
+[build-dependencies]
+cc = "1.0"
+
+[[bin]]
+name = "unillm-server"
+path = "src/server.rs"
+
+[[bin]]
+name = "unillm-benchmark"
+path = "src/benchmark.rs"
+required-features = ["benchmarking"]
+
+[[bin]]
+name = "unillm-client"
+path = "src/client.rs"
