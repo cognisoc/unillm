@@ -142,7 +142,7 @@ impl BatchProcessor {
         while let Some(batch) = pending_batches.front() {
             if self.is_batch_ready(batch).await {
                 return pending_batches.pop_front();
-            } else if batch.created_at.elapsed() > self.config.batch_timeout_ms.into() {
+            } else if batch.created_at.elapsed() > Duration::from_millis(self.config.batch_timeout_ms) {
                 // Force process timed out batch
                 return pending_batches.pop_front();
             } else {

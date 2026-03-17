@@ -44,6 +44,11 @@ help: ## Show this help message
 	@echo "  make build-h100          # Build for H100"
 	@echo "  make build-mi300x        # Build for MI300X"
 	@echo ""
+	@echo "$(BLUE)UNIKERNEL BUILDS:$(NC)"
+	@echo "  make build-unikernel-rtx4090  # Build Nanos unikernel for RTX 4090"
+	@echo "  make build-unikernel-h100     # Build Nanos unikernel for H100"
+	@echo "  make build-unikraft-rtx4090   # Build Unikraft unikernel for RTX 4090"
+	@echo ""
 	@echo "$(BLUE)BUILD TARGETS:$(NC)"
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ { printf "  $(GREEN)%-20s$(NC) %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
@@ -136,6 +141,30 @@ build-mi250x: check-deps ## Build optimized image for MI250X
 build-cpu-docker: check-deps ## Build CPU-only Docker image
 	@echo "$(BLUE)🎯 Building CPU-only image...$(NC)"
 	./build.sh --gpu-target cpu
+
+# ==============================================================================
+# UNIKERNEL TARGETS
+# ==============================================================================
+
+build-unikernel-rtx4090: check-deps ## Build Nanos unikernel for RTX 4090
+	@echo "$(BLUE)🎯 Building Nanos unikernel for RTX 4090...$(NC)"
+	python3 build.py --target-gpu rtx4090 --unikernel nanos
+
+build-unikernel-h100: check-deps ## Build Nanos unikernel for H100
+	@echo "$(BLUE)🎯 Building Nanos unikernel for H100...$(NC)"
+	python3 build.py --target-gpu h100 --unikernel nanos
+
+build-unikernel-mi300x: check-deps ## Build Unikraft unikernel for MI300X
+	@echo "$(BLUE)🎯 Building Unikraft unikernel for MI300X...$(NC)"
+	python3 build.py --target-gpu mi300x --unikernel unikraft
+
+build-unikraft-rtx4090: check-deps ## Build Unikraft unikernel for RTX 4090
+	@echo "$(BLUE)🎯 Building Unikraft unikernel for RTX 4090...$(NC)"
+	python3 build.py --target-gpu rtx4090 --unikernel unikraft
+
+build-hermit-rtx4090: check-deps ## Build RustyHermit unikernel for RTX 4090
+	@echo "$(BLUE)🎯 Building RustyHermit unikernel for RTX 4090...$(NC)"
+	python3 build.py --target-gpu rtx4090 --unikernel hermit
 
 # ==============================================================================
 # DOCKER OPERATIONS

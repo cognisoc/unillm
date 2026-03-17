@@ -77,7 +77,7 @@ impl DecodeLoop {
     /// 
     /// # Returns
     /// The next token ID, or None if generation is complete
-    pub fn step(&mut self, logits: ArrayViewD<f32>, sampler: &crate::GreedySampler) -> Option<u32> {
+    pub fn step(&mut self, logits: ArrayViewD<f32>, sampler: &crate::sampler::GreedySampler) -> Option<u32> {
         if self.state.finished {
             return None;
         }
@@ -99,7 +99,7 @@ impl DecodeLoop {
     /// 
     /// # Returns
     /// The complete generated sequence
-    pub fn run<F>(&mut self, mut model_fn: F, sampler: &crate::GreedySampler) -> Result<Vec<u32>, Box<dyn std::error::Error>>
+    pub fn run<F>(&mut self, mut model_fn: F, sampler: &crate::sampler::GreedySampler) -> Result<Vec<u32>, Box<dyn std::error::Error>>
     where
         F: FnMut(&[u32]) -> Result<ArrayD<f32>, Box<dyn std::error::Error>>,
     {
@@ -171,7 +171,7 @@ impl BatchDecodeLoop {
     /// 
     /// # Returns
     /// Vector of next token IDs, with None for finished sequences
-    pub fn step(&mut self, logits_batch: ArrayViewD<f32>, sampler: &crate::GreedySampler) -> Vec<Option<u32>> {
+    pub fn step(&mut self, logits_batch: ArrayViewD<f32>, sampler: &crate::sampler::GreedySampler) -> Vec<Option<u32>> {
         let mut results = Vec::new();
         
         for (i, loop_state) in self.loops.iter_mut().enumerate() {
@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn test_decode_loop() {
         let mut decode_loop = DecodeLoop::new(vec![1, 2], 5, 0);
-        let sampler = crate::GreedySampler::new();
+        let sampler = crate::sampler::GreedySampler::new();
         
         // Mock model function that returns logits with max at index 3
         let model_fn = |_tokens: &[u32]| -> Result<ArrayD<f32>, Box<dyn std::error::Error>> {

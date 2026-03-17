@@ -13,7 +13,7 @@ pub mod types;
 use async_trait::async_trait;
 pub use engine::UniLLMInferenceEngine;
 pub use request::{InferenceRequest, RequestBuilder};
-pub use response::{InferenceResponse, ResponseStream};
+pub use response::{InferenceResponse, ResponseStream, StreamSender};
 pub use batch::{BatchProcessor, BatchOptimizer};
 pub use metrics::{InferenceMetrics, PerformanceCollector};
 pub use types::*;

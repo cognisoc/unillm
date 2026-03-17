@@ -25,10 +25,10 @@ pub use stream_overlap::{
 };
 
 // Intelligent scheduler components
-pub use intelligent_scheduler::{IntelligentScheduler, SchedulingPolicy};
-pub use cache_analyzer::{CacheAwareAnalyzer, BatchAnalysis, OptimizationResult};
-pub use gpu_memory_tracker::{GpuMemoryTracker, MemoryFeasibility, OptimalBatchSize, GpuMemoryStats};
-pub use adaptive_policy::{AdaptivePolicyEngine, PolicyDecision, PolicySummary, WorkloadAnalysis};
+pub use intelligent_scheduler::{IntelligentScheduler, SchedulingPolicy, InferenceRequest, ScheduleInfo};
+pub use cache_analyzer::CacheAwareAnalyzer;
+pub use gpu_memory_tracker::{GpuMemoryTracker, GpuMemoryStats};
+pub use adaptive_policy::{AdaptivePolicyEngine, PolicySummary, WorkloadAnalysis};
 pub use types::*;
 
 /// Request priority levels

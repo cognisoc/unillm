@@ -696,3 +696,21 @@ mod tests {
         assert!(stats.l1_hits > 0 || stats.l2_hits > 0);
     }
 }
+
+impl HybridKVCache {
+    /// Analyze a request for cache optimization (stub implementation)
+    pub fn analyze_request(&self, _prompt: &str, _max_tokens: usize) -> CacheAnalysis {
+        CacheAnalysis {
+            hit_probability: 0.5,
+            shared_prefix_length: 0,
+            optimal_tier: CacheTier::L1Radix,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CacheAnalysis {
+    pub hit_probability: f64,
+    pub shared_prefix_length: usize,
+    pub optimal_tier: CacheTier,
+}

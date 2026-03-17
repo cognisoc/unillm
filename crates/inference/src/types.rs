@@ -157,6 +157,20 @@ pub struct ExecutionContext {
     pub session_id: Option<String>,
 }
 
+impl Default for ExecutionContext {
+    fn default() -> Self {
+        Self {
+            request_id: RequestId::new(),
+            submitted_at: Instant::now(),
+            started_at: None,
+            priority: RequestPriority::default(),
+            timeout: None,
+            client_id: None,
+            session_id: None,
+        }
+    }
+}
+
 impl ExecutionContext {
     pub fn new(request_id: RequestId) -> Self {
         Self {
@@ -302,4 +316,37 @@ impl Default for MemoryConfig {
             enable_cpu_offload: false,
         }
     }
+}
+
+/// Cache information (stub)
+#[derive(Debug, Clone)]
+pub struct CacheInfo {
+    pub hit_rate: f64,
+    pub size: usize,
+    pub cached_tokens: usize,
+    pub cache_tier: String,
+    pub prefix_cached: bool,
+}
+
+/// Resource usage information (stub)
+#[derive(Debug, Clone)]
+pub struct ResourceUsage {
+    pub gpu_memory_used: usize,
+    pub cpu_memory_used: usize,
+}
+
+/// Response metadata (stub)
+#[derive(Debug, Clone)]
+pub struct ResponseMetadata {
+    pub model_version: String,
+    pub processing_time_ms: f64,
+}
+
+/// Finish reason for generation (stub)
+#[derive(Debug, Clone)]
+pub enum FinishReason {
+    Length,
+    Stop,
+    Error,
+    Completed,
 }

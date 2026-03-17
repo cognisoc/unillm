@@ -191,7 +191,7 @@ impl ResponseStream {
         Ok(InferenceResponse {
             request_id: self.request_id,
             text: cumulative_text,
-            tokens: if tokens.is_empty() { None } else { Some(tokens) },
+            tokens: if tokens.is_empty() { None } else { Some(tokens.clone()) },
             stats: final_stats.unwrap_or_else(|| GenerationStats {
                 prompt_tokens: 0,
                 completion_tokens: tokens.len(),

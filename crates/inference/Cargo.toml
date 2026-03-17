@@ -13,7 +13,7 @@ thiserror = "1.0"
 # Internal UniLLM components
 kv = { path = "../kv" }
 scheduler = { path = "../scheduler" }
-kernels = { path = "../kernels" }
+# kernels = { path = "../kernels" }    # Temporarily disabled
 
 # Async and concurrency
 futures = "0.3"
@@ -26,10 +26,10 @@ tokio-metrics = "0.3"
 bytemuck = "1.0"
 
 # Random generation for request IDs
-uuid = { version = "1.0", features = ["v4"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
 
 [features]
-default = ["cuda", "hip"]
-cuda = ["kernels/cuda"]
-hip = ["kernels/hip"]
+default = []
+# cuda = ["kernels/cuda"]    # Temporarily disabled
+# hip = ["kernels/hip"]      # Temporarily disabled
 benchmarking = []

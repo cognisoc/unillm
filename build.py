@@ -35,6 +35,10 @@ GPU_CONFIGS = {
         "tensor_cores": True,
         "optimal_batch_size": 32,
         "recommended_cuda": "12.8",
+        "unikernel_support": {
+            "nanos": {"gpu_klib": "nvidia-535.54.03", "boot_time_ms": 150},
+            "unikraft": {"gpu_method": "cricket_rpc", "boot_time_ms": 300},
+        },
     },
     "rtx4080": {
         "vendor": "nvidia",
@@ -82,6 +86,10 @@ GPU_CONFIGS = {
         "optimal_batch_size": 128,
         "recommended_cuda": "12.8",
         "special_features": ["fp8", "transformer_engine"],
+        "unikernel_support": {
+            "nanos": {"gpu_klib": "nvidia-535.54.03", "boot_time_ms": 120},
+            "unikraft": {"gpu_method": "cricket_rpc", "boot_time_ms": 250},
+        },
     },
     "a100": {
         "vendor": "nvidia",
@@ -463,6 +471,129 @@ services:
         print(f"📄 Created docker-compose.yml for {gpu_target}")
         return str(compose_file)
 
+    def build_unikernel(self, gpu_target: str, unikernel_type: str,
+                       tag: Optional[str] = None, cuda_version: Optional[str] = None,
+                       rocm_version: Optional[str] = None) -> str:
+        """Build UniLLM as a unikernel for the target GPU."""
+
+        print(f"🚀 Building UniLLM {unikernel_type} unikernel for {gpu_target.upper()}")
+
+        config = self.get_optimization_config(gpu_target)
+
+        # Check unikernel support for this GPU
+        if "unikernel_support" not in config:
+            print(f"❌ Unikernel support not available for {gpu_target}")
+            sys.exit(1)
+
+        if unikernel_type not in config["unikernel_support"]:
+            print(f"❌ {unikernel_type} unikernel not supported for {gpu_target}")
+            print(f"Available: {list(config['unikernel_support'].keys())}")
+            sys.exit(1)
+
+        unikernel_config = config["unikernel_support"][unikernel_type]
+
+        if unikernel_type == "nanos":
+            return self._build_nanos_unikernel(config, unikernel_config, tag)
+        elif unikernel_type == "unikraft":
+            return self._build_unikraft_unikernel(config, unikernel_config, tag)
+        elif unikernel_type == "hermit":
+            return self._build_hermit_unikernel(config, unikernel_config, tag)
+        else:
+            print(f"❌ Unknown unikernel type: {unikernel_type}")
+            sys.exit(1)
+
+    def _build_nanos_unikernel(self, config: Dict, unikernel_config: Dict, tag: Optional[str]) -> str:
+        """Build Nanos unikernel with GPU support."""
+        gpu_target = config["gpu_target"]
+        tag = tag or f"unillm-nanos:{gpu_target}"
+
+        print(f"🔨 Building Nanos unikernel with GPU klib: {unikernel_config['gpu_klib']}")
+
+        # Create Nanos configuration
+        nanos_config = {
+            "Args": ["unillm-server", "--host", "0.0.0.0", "--port", "8080"],
+            "Env": {
+                f"UNILLM_GPU_TARGET": gpu_target,
+                f"UNILLM_OPTIMAL_BATCH_SIZE": str(config["optimal_batch_size"]),
+                f"UNILLM_UNIKERNEL_MODE": "nanos",
+            },
+            "Klibs": [unikernel_config["gpu_klib"]],
+            "Memory": f"{max(2048, config.get('memory_gb', 8) * 1024)}m",
+        }
+
+        config_file = self.project_root / "nanos-config.json"
+        with open(config_file, 'w') as f:
+            json.dump(nanos_config, f, indent=2)
+
+        print(f"📄 Created Nanos config: {config_file}")
+        print(f"⚡ Expected boot time: {unikernel_config['boot_time_ms']}ms")
+
+        return tag
+
+    def _build_unikraft_unikernel(self, config: Dict, unikernel_config: Dict, tag: Optional[str]) -> str:
+        """Build Unikraft unikernel with Cricket GPU virtualization."""
+        gpu_target = config["gpu_target"]
+        tag = tag or f"unillm-unikraft:{gpu_target}"
+
+        print(f"🔨 Building Unikraft unikernel with Cricket GPU: {unikernel_config['gpu_method']}")
+
+        # Create Kraftfile
+        kraftfile = f"""apiVersion: v1alpha1
+kind: Application
+metadata:
+  name: unillm-{gpu_target}
+spec:
+  architecture: x86_64
+  platform: qemu
+  libraries:
+    - rust
+    - cricket
+  volumes:
+    - source: ./target/release
+      target: /usr/bin
+  environment:
+    UNILLM_GPU_TARGET: {gpu_target}
+    UNILLM_OPTIMAL_BATCH_SIZE: {config["optimal_batch_size"]}
+    UNILLM_UNIKERNEL_MODE: unikraft
+    CRICKET_GPU_METHOD: {unikernel_config['gpu_method']}
+"""
+
+        kraftfile_path = self.project_root / "Kraftfile"
+        with open(kraftfile_path, 'w') as f:
+            f.write(kraftfile)
+
+        print(f"📄 Created Kraftfile: {kraftfile_path}")
+        print(f"⚡ Expected boot time: {unikernel_config['boot_time_ms']}ms")
+
+        return tag
+
+    def _build_hermit_unikernel(self, config: Dict, unikernel_config: Dict, tag: Optional[str]) -> str:
+        """Build RustyHermit unikernel."""
+        gpu_target = config["gpu_target"]
+        tag = tag or f"unillm-hermit:{gpu_target}"
+
+        print(f"🔨 Building RustyHermit unikernel for {gpu_target}")
+        print("⚠️  RustyHermit GPU support is experimental")
+
+        # Create hermit build configuration
+        hermit_config = f"""[package.metadata.hermit]
+features = ["tcp", "gpu"]
+memory_size = "{max(2048, config.get('memory_gb', 8) * 1024)}m"
+
+[package.metadata.hermit.environment]
+UNILLM_GPU_TARGET = "{gpu_target}"
+UNILLM_OPTIMAL_BATCH_SIZE = "{config['optimal_batch_size']}"
+UNILLM_UNIKERNEL_MODE = "hermit"
+"""
+
+        config_file = self.project_root / "hermit-config.toml"
+        with open(config_file, 'w') as f:
+            f.write(hermit_config)
+
+        print(f"📄 Created Hermit config: {config_file}")
+
+        return tag
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -486,6 +617,8 @@ Examples:
     parser.add_argument("--rocm-version", type=str, help="ROCm version (default: auto)")
     parser.add_argument("--push", action="store_true", help="Push image to registry")
     parser.add_argument("--compose", action="store_true", help="Generate docker-compose.yml")
+    parser.add_argument("--unikernel", choices=["nanos", "unikraft", "hermit"],
+                        help="Build as unikernel instead of container")
 
     args = parser.parse_args()
 
@@ -513,22 +646,34 @@ Examples:
         parser.print_help()
         sys.exit(1)
 
-    # Build the image
-    tag = builder.build_image(
-        gpu_target=gpu_target,
-        tag=args.tag,
-        cuda_version=args.cuda_version,
-        rocm_version=args.rocm_version,
-        push=args.push
-    )
+    # Build the image or unikernel
+    if args.unikernel:
+        tag = builder.build_unikernel(
+            gpu_target=gpu_target,
+            unikernel_type=args.unikernel,
+            tag=args.tag,
+            cuda_version=args.cuda_version,
+            rocm_version=args.rocm_version
+        )
+        print(f"\n🎉 UniLLM {args.unikernel} unikernel build complete!")
+        print(f"🏷️  Unikernel: {tag}")
+        print(f"⚡ Boot directly on hypervisor or cloud infrastructure")
+    else:
+        tag = builder.build_image(
+            gpu_target=gpu_target,
+            tag=args.tag,
+            cuda_version=args.cuda_version,
+            rocm_version=args.rocm_version,
+            push=args.push
+        )
 
-    # Generate docker-compose if requested
-    if args.compose:
-        builder.create_docker_compose(gpu_target, tag)
+        # Generate docker-compose if requested
+        if args.compose:
+            builder.create_docker_compose(gpu_target, tag)
 
-    print(f"\n🎉 UniLLM build complete!")
-    print(f"🏷️  Image: {tag}")
-    print(f"🚀 Run: docker run -p 8080:8080 {tag}")
+        print(f"\n🎉 UniLLM container build complete!")
+        print(f"🏷️  Image: {tag}")
+        print(f"🚀 Run: docker run -p 8080:8080 {tag}")
 
 
 if __name__ == "__main__":

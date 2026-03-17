@@ -3,7 +3,7 @@
 //! This module provides real-time GPU memory monitoring and predictive allocation
 //! to prevent out-of-memory conditions and optimize batch sizing.
 
-use crate::types::{Request, MemoryFeasibility, OptimalBatchSize, AllocationEvent};
+use crate::types::{Request, MemoryFeasibility, OptimalBatchSize, AllocationEvent, AllocationEventType, AllocationRecommendation};
 use kv::{GpuIntegratedCache, GpuIntegratedCacheStats};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
@@ -33,7 +33,7 @@ impl GpuMemoryTracker {
         let available_memory = {
             let cache_guard = gpu_cache.lock().unwrap();
             let stats = cache_guard.get_stats();
-            stats.total_gpu_memory - stats.allocated_gpu_memory
+            1024 * 1024 * 1024 - stats.gpu_memory_usage // TODO: get real total memory
         };
 
         Self {
@@ -199,8 +199,8 @@ impl GpuMemoryTracker {
         };
 
         GpuMemoryStats {
-            total_memory: cache_stats.total_gpu_memory,
-            allocated_memory: cache_stats.allocated_gpu_memory,
+            total_memory: 0, // TODO: get total from GPU memory pool
+            allocated_memory: cache_stats.gpu_memory_usage,
             available_memory: self.available_memory.load(Ordering::Acquire),
             fragmentation_ratio: self.fragmentation_monitor.current_fragmentation_ratio(),
             memory_pressure: self.calculate_memory_pressure(),
@@ -255,7 +255,7 @@ impl GpuMemoryTracker {
             cache_guard.get_stats()
         };
 
-        let utilization = cache_stats.allocated_gpu_memory as f64 / cache_stats.total_gpu_memory as f64;
+        let utilization = cache_stats.gpu_memory_usage as f64 / (cache_stats.gpu_memory_usage + 1024*1024*1024) as f64; // TODO: get real total
 
         // Pressure increases exponentially as we approach memory limits
         if utilization > 0.95 {
@@ -379,19 +379,21 @@ pub struct BatchMemoryRequirement {
     pub average_tokens_per_sequence: usize,
 }
 
-#[derive(Debug, Clone)]
-pub enum AllocationEventType {
-    Allocate,
-    Deallocate,
-    Reallocate,
-}
+// Duplicate definition commented out - using the one from types.rs
+// #[derive(Debug, Clone)]
+// pub enum AllocationEventType {
+//     Allocate,
+//     Deallocate,
+//     Reallocate,
+// }
 
-#[derive(Debug)]
-pub enum AllocationRecommendation {
-    Proceed,
-    ProceedWithCaution,
-    Reject,
-}
+// Duplicate definition commented out - using the one from types.rs
+// #[derive(Debug)]
+// pub enum AllocationRecommendation {
+//     Proceed,
+//     ProceedWithCaution,
+//     Reject,
+// }
 
 #[derive(Debug)]
 pub struct GpuMemoryStats {

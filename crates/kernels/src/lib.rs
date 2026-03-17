@@ -12,18 +12,25 @@ pub mod optimization_engine;
 pub mod auto_tuner;
 pub mod types;
 
+#[cfg(feature = "unikernel")]
+pub mod unikernel_gpu;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 pub use template_engine::TemplateEngine;
-pub use hardware_detection::{HardwareDetector, HardwareInfo, GpuArchitecture};
+pub use hardware_detection::{HardwareDetector, GpuArchitecture};
+pub use types::HardwareInfo;
 pub use cuda_driver::CudaDriverInterface;
 pub use hip_driver::HipDriverInterface;
 pub use optimization_engine::{OptimizationEngine, OptimizationConfiguration, WorkloadCharacteristics};
 pub use auto_tuner::{AutoTuner, PerformanceTarget, TuningStrategy};
 pub use types::*;
+
+#[cfg(feature = "unikernel")]
+pub use unikernel_gpu::{UnikernnelGpuInterface, UnikernnelGpuFactory, GpuError, create_runtime_gpu_interface};
 
 /// Main kernel framework that orchestrates GPU optimization
 pub struct KernelFramework {

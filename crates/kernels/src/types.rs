@@ -135,3 +135,42 @@ impl HardwareInfo {
         }
     }
 }
+
+/// Placeholder for missing types that were causing compilation errors
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptimizedKernel {
+    pub name: String,
+    pub source_code: String,
+    pub parameters: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompiledKernel {
+    pub name: String,
+    pub binary_data: Vec<u8>,
+    pub function_name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BatchExecutionConfig {
+    pub batch_size: usize,
+    pub grid_dim: (u32, u32, u32),
+    pub block_dim: (u32, u32, u32),
+}
+
+#[derive(Debug, Clone)]
+pub struct KernelExecutionResult {
+    pub performance: KernelPerformance,
+    pub output_data: Vec<u8>,
+    pub execution_time_ms: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct KernelPerformance {
+    pub throughput_tflops: f64,
+    pub memory_bandwidth_gb_s: f64,
+    pub power_consumption_watts: f64,
+    pub energy_efficiency: f64,
+    pub kernel_execution_time_us: f64,
+    pub memory_transfer_time_us: f64,
+}

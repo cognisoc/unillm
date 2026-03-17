@@ -11,7 +11,7 @@ mod gpu_integrated_cache;
 
 pub use hybrid_cache::{
     HybridKVCache, CacheHandle, CacheTier, KVTensorPair, TokenId, SequenceId,
-    RadixCache, AdaptiveCachePolicy, CachePolicy, HybridCacheStats
+    RadixCache, AdaptiveCachePolicy, CachePolicy, HybridCacheStats, CacheAnalysis
 };
 
 pub use gpu_memory::{

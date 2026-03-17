@@ -466,15 +466,15 @@ impl AutoTuner {
         let base_throughput = 1000.0 * block_size_factor * cache_factor * fusion_factor;
 
         OptimizationMetrics {
-            throughput_ops_per_sec: base_throughput * rng.gen_range(0.9..1.1),
-            latency_ms: (100.0 / (block_size_factor * cache_factor)) * rng.gen_range(0.9..1.1),
-            memory_bandwidth_utilization: (0.7 * cache_factor).min(0.95) * rng.gen_range(0.95..1.05),
-            compute_utilization: (0.8 * block_size_factor).min(0.98) * rng.gen_range(0.95..1.05),
-            cache_hit_rate: (config.l1_cache_priority * 0.9) * rng.gen_range(0.95..1.05),
-            power_consumption_watts: (250.0 * block_size_factor * fusion_factor) * rng.gen_range(0.9..1.1),
-            energy_efficiency: (base_throughput / (250.0 * block_size_factor)) * rng.gen_range(0.9..1.1),
-            kernel_execution_time_us: (200.0 / block_size_factor) * rng.gen_range(0.9..1.1),
-            memory_transfer_time_us: (100.0 / cache_factor) * rng.gen_range(0.9..1.1),
+            throughput_ops_per_sec: base_throughput as f64 * rng.gen_range(0.9..1.1),
+            latency_ms: (100.0 / (block_size_factor * cache_factor)) as f64 * rng.gen_range(0.9..1.1),
+            memory_bandwidth_utilization: (0.7 * cache_factor).min(0.95) as f64 * rng.gen_range(0.95..1.05),
+            compute_utilization: (0.8 * block_size_factor).min(0.98) as f64 * rng.gen_range(0.95..1.05),
+            cache_hit_rate: (config.l1_cache_priority * 0.9) as f64 * rng.gen_range(0.95..1.05),
+            power_consumption_watts: (250.0 * block_size_factor * fusion_factor) as f64 * rng.gen_range(0.9..1.1),
+            energy_efficiency: (base_throughput / (250.0 * block_size_factor)) as f64 * rng.gen_range(0.9..1.1),
+            kernel_execution_time_us: (200.0 / block_size_factor) as f64 * rng.gen_range(0.9..1.1),
+            memory_transfer_time_us: (100.0 / cache_factor) as f64 * rng.gen_range(0.9..1.1),
             queue_time_us: 50.0 * rng.gen_range(0.5..1.5),
         }
     }

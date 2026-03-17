@@ -2,8 +2,9 @@
 members = [
     "crates/kv",
     "crates/scheduler",
-    "crates/kernels",
+    # "crates/kernels",    # Temporarily disabled due to compilation issues
     "crates/inference",
+    "crates/runtime",
 ]
 resolver = "2"
 
@@ -49,7 +50,7 @@ categories = ["science", "concurrency", "hardware-support"]
 # Internal crates
 kv = { path = "crates/kv" }
 scheduler = { path = "crates/scheduler" }
-kernels = { path = "crates/kernels" }
+# kernels = { path = "crates/kernels" }    # Temporarily disabled
 inference = { path = "crates/inference" }
 
 # Core dependencies from workspace
@@ -64,20 +65,27 @@ clap = { version = "4.0", features = ["derive"] }
 axum = "0.7"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "compression-br"] }
+reqwest = { version = "0.11", features = ["json"] }
 
 # Tracing and logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [features]
-default = ["cuda", "hip"]
-cuda = ["kernels/cuda"]
-hip = ["kernels/hip"]
+default = []  # Temporarily disable GPU features until kernels crate is fixed
+# cuda = ["kernels/cuda"]       # Temporarily disabled
+# hip = ["kernels/hip"]         # Temporarily disabled
 benchmarking = ["inference/benchmarking"]
 
-# GPU vendor-specific features
-nvidia = ["cuda"]
-amd = ["hip"]
+# GPU vendor-specific features (temporarily disabled)
+# nvidia = ["cuda"]
+# amd = ["hip"]
+
+# Unikernel support
+unikernel = []
+nanos = ["unikernel"]
+unikraft = ["unikernel"]
+hermit = ["unikernel"]
 
 # Optimization levels
 debug-optimizations = []

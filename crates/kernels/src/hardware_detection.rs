@@ -3,7 +3,7 @@
 //! This module provides comprehensive hardware detection for optimal kernel
 //! compilation and execution strategy selection.
 
-use crate::types::{GpuVendor, GpuDriverError, GpuDriverResult, HardwareInfo};
+pub use crate::types::{GpuVendor, GpuDriverError, GpuDriverResult, HardwareInfo};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

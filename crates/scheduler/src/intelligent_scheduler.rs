@@ -8,13 +8,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::cmp::Ordering;
 
-use crate::{Request, RequestBatch, RequestPriority, RequestState, SchedulerStats};
+use crate::{Request, RequestBatch, RequestPriority, RequestState, SchedulerStats, BatchAnalysis};
 
 // Import our GPU-integrated cache system
 use kv::{GpuIntegratedCache, GpuBackendType, TokenId, CacheHandle, CacheTier, GpuIntegratedCacheStats};
 
 /// Intelligent scheduling policies
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SchedulingPolicy {
     /// First-Come-First-Served (baseline, like vLLM)
     FCFS,
@@ -39,15 +39,6 @@ pub struct RequestAnalysis {
     pub estimated_latency: Duration,    // Predicted processing latency
 }
 
-/// Batch optimization analysis
-#[derive(Debug, Clone)]
-pub struct BatchAnalysis {
-    pub total_cache_hits: usize,
-    pub shared_prefix_groups: Vec<Vec<u32>>, // Groups of request IDs with shared prefixes
-    pub total_memory_needed: usize,
-    pub estimated_throughput: f64,
-    pub fragmentation_score: f64,       // Memory fragmentation impact
-}
 
 /// Cache-aware batch optimizer
 pub struct CacheAwareBatchOptimizer {
@@ -75,9 +66,9 @@ impl CacheAwareBatchOptimizer {
         let cache_hit_potential = if let Ok(gpu_cache) = self.gpu_cache.try_lock() {
             let cache_stats = gpu_cache.get_stats();
             // Simplified heuristic - in practice would query cache for prefix matches
-            if cache_stats.l1_hits > 0 {
+            if cache_stats.hybrid_stats.l1_hits > 0 {
                 0.7 // High likelihood if we have L1 hits
-            } else if cache_stats.l2_hits > 0 {
+            } else if cache_stats.hybrid_stats.l2_hits > 0 {
                 0.4 // Medium likelihood for L2
             } else {
                 0.1 // Low likelihood for cold cache
@@ -352,7 +343,7 @@ impl PerformancePredictor {
 
         // Find closest baseline
         let baseline_latency = self.baseline_latencies.iter()
-            .min_by_key(|(len, _)| (*len as isize - sequence_length as isize).abs())
+            .min_by_key(|(len, _)| (**len as isize - sequence_length as isize).abs())
             .map(|(_, latency)| *latency)
             .unwrap_or(Duration::from_millis(50));
 
@@ -468,8 +459,9 @@ impl IntelligentScheduler {
         let requests: Vec<_> = self.pending_requests.iter().collect();
 
         // Use batch optimizer to select optimal requests
+        let requests_slice: Vec<Request> = requests.iter().map(|r| (*r).clone()).collect();
         let selected_ids = self.batch_optimizer.optimize_batch(
-            &requests,
+            &requests_slice,
             self.max_batch_size,
             self.max_gpu_memory
         );
@@ -684,4 +676,57 @@ mod tests {
             println!("Testing policy: {:?}", policy);
         }
     }
+}
+
+impl IntelligentScheduler {
+    /// Create a new scheduler with minimal configuration
+    pub fn new_minimal(kv_cache: Arc<Mutex<GpuIntegratedCache>>) -> Self {
+        Self {
+            pending_requests: VecDeque::new(),
+            active_requests: HashMap::new(),
+            completed_requests: VecDeque::new(),
+            gpu_cache: kv_cache.clone(),
+            batch_optimizer: CacheAwareBatchOptimizer {
+                gpu_cache: kv_cache.clone(),
+                policy: SchedulingPolicy::FCFS,
+                workload_analyzer: WorkloadAnalyzer::new(),
+                performance_predictor: PerformancePredictor::new(),
+            },
+            current_policy: SchedulingPolicy::FCFS,
+            policy_performance: HashMap::new(),
+            last_policy_switch: Instant::now(),
+            max_batch_size: 32,
+            max_gpu_memory: 1024 * 1024 * 1024,
+            batching_window: Duration::from_millis(100),
+            next_request_id: 1,
+            next_batch_id: 1,
+            last_batch_time: Instant::now(),
+            stats: IntelligentSchedulerStats::new(),
+        }
+    }
+
+    /// Schedule a request (stub implementation)
+    pub fn schedule_request(&self, _request: &InferenceRequest, _cache_analysis: &kv::CacheAnalysis) -> Result<ScheduleInfo, String> {
+        Ok(ScheduleInfo {
+            gpu_id: 0,
+            memory_pressure: 0.5,
+            batch_position: Some(0),
+            estimated_latency: std::time::Duration::from_millis(100),
+        })
+    }
+}
+
+// Temporary stub until cross-crate imports are fixed
+#[derive(Debug, Clone)]
+pub struct InferenceRequest {
+    pub prompt: String,
+    pub max_tokens: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScheduleInfo {
+    pub gpu_id: usize,
+    pub memory_pressure: f32,
+    pub batch_position: Option<usize>,
+    pub estimated_latency: std::time::Duration,
 }

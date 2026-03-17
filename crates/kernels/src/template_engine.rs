@@ -268,6 +268,7 @@ impl TemplateEngine {
             crate::GpuVendor::Nvidia => 1.2,
             crate::GpuVendor::Amd => 1.0,
             crate::GpuVendor::Intel => 0.8,
+            crate::GpuVendor::Unknown => 0.5,
         };
 
         PerformanceCharacteristics {
