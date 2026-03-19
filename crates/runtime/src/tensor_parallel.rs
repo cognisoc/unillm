@@ -578,7 +578,7 @@ impl TensorParallelManager {
 
         for (i, shard) in distributed_tensor.shards.iter().enumerate() {
             println!("   Gathering shard {} (shape: {:?})", i, shard.shape());
-            all_data.extend_from_slice(shard.data());
+            all_data.extend_from_slice(&shard.data());
         }
 
         // Create gathered tensor

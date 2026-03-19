@@ -322,6 +322,7 @@ impl GGUFLoader {
             hidden_size,
             intermediate_size,
             num_layers,
+            num_heads: num_attention_heads,
             num_attention_heads,
             head_dim,
             max_seq_len,

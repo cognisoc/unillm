@@ -479,7 +479,8 @@ impl HuggingFaceHub {
     }
 
     /// Get size of a directory recursively
-    async fn get_directory_size(&self, dir_path: &Path) -> Result<u64, ModelError> {
+    fn get_directory_size<'a>(&'a self, dir_path: &'a Path) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64, ModelError>> + 'a>> {
+        Box::pin(async move {
         let mut total_size = 0u64;
 
         let mut entries = tokio::fs::read_dir(dir_path).await
@@ -499,6 +500,7 @@ impl HuggingFaceHub {
         }
 
         Ok(total_size)
+        })
     }
 }
 

@@ -667,7 +667,7 @@ impl TransparentTensorOps {
 
         // Gather all data
         for tensor in tensors {
-            all_data.extend_from_slice(tensor.data());
+            all_data.extend_from_slice(&tensor.data());
         }
 
         // Create output tensor

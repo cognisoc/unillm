@@ -7,10 +7,9 @@ use crate::{
     // model_architectures::ModelConfig,  // Temporarily disabled
     basic_model::ModelConfig,  // Use from basic_model instead
     gpu_tensor_ops::{GpuDevice, GpuTensor, GpuTensorOps},
-    intelligent_distribution::{
-        ModelArchitecture, ComputeGraph, ComputeNode, MemoryProfile, NodeId,
-        OpType, TensorShape, DataType, DistributionStrategy,
-    },
+    // intelligent_distribution - temporarily disabled
+    // ModelArchitecture, ComputeGraph, ComputeNode, MemoryProfile, NodeId,
+    // OpType, TensorShape, DataType, DistributionStrategy,
     types::*,
 };
 use std::sync::Arc;
@@ -68,9 +67,11 @@ impl WorkingLlamaModel {
             hidden_size: 64,            // Reduced from 4096
             num_layers: 2,              // Reduced from 32
             num_heads: 4,               // Reduced from 32
+            num_attention_heads: 4,     // Same as num_heads
             head_dim: 16,               // 64 / 4 = 16
             intermediate_size: 256,     // Reduced from 11008
             max_seq_len: 128,           // Reduced from 4096
+            eps: 1e-5,                  // Standard epsilon
         }
     }
 
@@ -1090,6 +1091,8 @@ impl RoPEEmbedding {
 }
 
 /// Implementation of ModelArchitecture trait for intelligent distribution
+// Temporarily disabled while intelligent_distribution module is disabled
+/*
 impl ModelArchitecture for WorkingLlamaModel {
     /// Apply distribution strategy to a specific layer/node
     fn apply_distribution_strategy(&mut self, node_id: NodeId, strategy: DistributionStrategy) -> Result<(), ModelError> {
@@ -1328,6 +1331,7 @@ impl ModelArchitecture for WorkingLlamaModel {
         Ok(graph.memory_profile)
     }
 }
+*/
 
 impl WorkingLlamaModel {
     /// Estimate total parameter count

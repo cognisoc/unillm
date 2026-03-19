@@ -49,21 +49,21 @@ impl RealModelLoader {
             ))?;
 
         // Extract actual configuration
-        let config = ModelConfig {
+        let num_heads = config_json["num_attention_heads"].as_u64().unwrap_or(32) as usize;
+        let hidden_size = config_json["hidden_size"].as_u64().unwrap_or(4096) as usize;
+
+        Ok(ModelConfig {
             vocab_size: config_json["vocab_size"].as_u64().unwrap_or(32000) as usize,
-            hidden_size: config_json["hidden_size"].as_u64().unwrap_or(4096) as usize,
+            hidden_size,
             num_layers: config_json["num_hidden_layers"].as_u64().unwrap_or(32) as usize,
-            num_heads: config_json["num_attention_heads"].as_u64().unwrap_or(32) as usize,
-            head_dim: 0, // Will be calculated
+            num_heads,
+            num_attention_heads: num_heads,
+            head_dim: hidden_size / num_heads,
             intermediate_size: config_json["intermediate_size"].as_u64().unwrap_or(11008) as usize,
             max_seq_len: config_json.get("max_position_embeddings")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(2048) as usize,
-        };
-
-        Ok(ModelConfig {
-            head_dim: config.hidden_size / config.num_heads,
-            ..config
+            eps: 1e-5,
         })
     }
 

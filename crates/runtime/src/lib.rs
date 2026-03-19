@@ -36,8 +36,9 @@ pub mod sampler;
 pub mod decode_loop;
 // pub mod structured_generation;  // Temporarily disabled
 // pub mod advanced_features;  // Temporarily disabled
-// pub mod production_server;  // Temporarily disabled
+// pub mod production_server;  // Temporarily disabled - uses disabled modules
 pub mod production_server_simple;
+pub mod production_server_new;  // New working production server
 // pub mod enhanced_kv_cache;  // Temporarily disabled
 // pub mod multi_gpu;  // Temporarily disabled
 // pub mod embedding_models;  // Temporarily disabled - has type conflicts
@@ -47,9 +48,9 @@ pub mod production_server_simple;
 pub mod paged_attention;  // Re-enabled for vLLM-style memory management
 pub mod flash_attention_v2;  // Re-enabling FlashAttention-2
 pub mod radix_attention;  // SGLang-style RadixAttention for prefix sharing
-pub mod tensor_parallel;  // Multi-GPU tensor parallelism for scaling
-pub mod intelligent_distribution;  // Revolutionary auto-optimization for multi-GPU
-pub mod transparent_tensor_ops;  // Transparent multi-GPU tensor operations
+// pub mod tensor_parallel;  // Multi-GPU tensor parallelism - temporarily disabled for compilation
+// pub mod intelligent_distribution;  // Revolutionary auto-optimization - temporarily disabled
+// pub mod transparent_tensor_ops;  // Transparent multi-GPU tensor operations - temporarily disabled
 // pub mod model_architectures;  // Temporarily disabled
 // pub mod model_implementations;  // Temporarily disabled
 // pub mod model_factory;  // Temporarily disabled - has dependency issues

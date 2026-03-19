@@ -161,6 +161,12 @@ pub enum ModelError {
     GenerationFailed(String),
     ValidationFailed(String),
     ServerError(String),
+    LoadingError(String),
+    ConfigurationError(String),
+    NetworkError(String),
+    FileSystemError(String),
+    CommunicationError(String),
+    RuntimeError(String),
 }
 
 impl fmt::Display for ModelError {
@@ -175,6 +181,12 @@ impl fmt::Display for ModelError {
             ModelError::GenerationFailed(msg) => write!(f, "Generation failed: {}", msg),
             ModelError::ValidationFailed(msg) => write!(f, "Validation failed: {}", msg),
             ModelError::ServerError(msg) => write!(f, "Server error: {}", msg),
+            ModelError::LoadingError(msg) => write!(f, "Loading error: {}", msg),
+            ModelError::ConfigurationError(msg) => write!(f, "Configuration error: {}", msg),
+            ModelError::NetworkError(msg) => write!(f, "Network error: {}", msg),
+            ModelError::FileSystemError(msg) => write!(f, "File system error: {}", msg),
+            ModelError::CommunicationError(msg) => write!(f, "Communication error: {}", msg),
+            ModelError::RuntimeError(msg) => write!(f, "Runtime error: {}", msg),
         }
     }
 }

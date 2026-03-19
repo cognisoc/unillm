@@ -60,9 +60,11 @@ impl ModelLoader {
             hidden_size,
             num_layers,
             num_heads,
+            num_attention_heads: num_heads,
             head_dim,
             intermediate_size,
             max_seq_len,
+            eps: 1e-5,
         })
     }
 

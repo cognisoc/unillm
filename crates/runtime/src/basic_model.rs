@@ -8,15 +8,17 @@ use crate::tensor_ops::{CpuTensor, CpuTensorOps};
 use std::collections::HashMap;
 
 /// Basic Llama model configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModelConfig {
     pub vocab_size: usize,
     pub hidden_size: usize,
     pub num_layers: usize,
     pub num_heads: usize,
+    pub num_attention_heads: usize, // Alias for num_heads
     pub head_dim: usize,
     pub intermediate_size: usize,
     pub max_seq_len: usize,
+    pub eps: f32, // Layer norm epsilon
 }
 
 impl Default for ModelConfig {
@@ -26,9 +28,11 @@ impl Default for ModelConfig {
             hidden_size: 512,    // Small for testing
             num_layers: 4,       // Small for testing
             num_heads: 8,
+            num_attention_heads: 8, // Same as num_heads
             head_dim: 64,        // hidden_size / num_heads
             intermediate_size: 1024, // ~2x hidden_size
             max_seq_len: 256,    // Small for testing
+            eps: 1e-5,          // Standard epsilon
         }
     }
 }

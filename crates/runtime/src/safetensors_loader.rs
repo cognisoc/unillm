@@ -339,7 +339,7 @@ impl SafeTensorsLoader {
 
         let intermediate_size = hf_config.get("intermediate_size")
             .and_then(|v| v.as_u64())
-            .unwrap_or(hidden_size * 4) as usize;
+            .unwrap_or((hidden_size * 4) as u64) as usize;
 
         let max_position_embeddings = hf_config.get("max_position_embeddings")
             .and_then(|v| v.as_u64())
@@ -352,6 +352,7 @@ impl SafeTensorsLoader {
             hidden_size,
             intermediate_size,
             num_layers,
+            num_heads: num_attention_heads,
             num_attention_heads,
             head_dim,
             max_seq_len: max_position_embeddings,

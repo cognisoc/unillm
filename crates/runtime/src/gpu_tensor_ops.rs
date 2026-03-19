@@ -15,7 +15,7 @@ pub struct GpuTensor {
 }
 
 /// Device types for GPU acceleration
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum GpuDevice {
     Cpu,
     Cuda(usize),
@@ -112,6 +112,16 @@ impl GpuTensor {
         Ok(data)
     }
 
+    /// Get tensor data (returns owned Vec for compatibility)
+    pub fn data(&self) -> Vec<f32> {
+        self.to_vec().unwrap_or_default()
+    }
+
+    /// Get device
+    pub fn device(&self) -> &GpuDevice {
+        &self.device
+    }
+
     /// Move tensor to specified device
     pub fn to_device(&self, target_device: GpuDevice) -> ModelResult<Self> {
         if std::mem::discriminant(&self.device) == std::mem::discriminant(&target_device) {
@@ -166,6 +176,11 @@ impl GpuTensorOps {
             inner: result,
             device: a.device.clone(),
         })
+    }
+
+    /// Matrix multiplication (alias for compatibility)
+    pub fn matrix_multiply(&self, a: &GpuTensor, b: &GpuTensor) -> ModelResult<GpuTensor> {
+        self.matmul(a, b)
     }
 
     /// Element-wise addition: C = A + B

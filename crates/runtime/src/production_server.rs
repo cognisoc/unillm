@@ -1,19 +1,17 @@
-//! Production-Grade Inference Server
+//! Production-grade API server for UniLLM
 //!
-//! High-performance HTTP server with:
-//! - OpenAI-compatible API endpoints
-//! - GPU-idle-free request processing
-//! - Health checks and metrics
-//! - Rate limiting and load balancing
-//! - Comprehensive monitoring
+//! High-performance inference server with vLLM/SGLang API compatibility.
+//! Supports multiple model formats, automatic loading, and concurrent serving.
 
 use crate::{
-    gpu_aware_batching::{GpuBatchScheduler, GpuBatchingConfig},
-    async_kv_cache::{AsyncKVCache, AsyncKVConfig},
-    async_flash_attention::AsyncFlashAttention,
-    flash_attention::FlashAttentionConfig,
-    gpu_tensor_ops::{GpuDevice, GpuTensorOps},
-    optimized_llama::BatchRequest,  // Use BatchRequest from optimized_llama
+    gpu_tensor_ops::{GpuDevice, GpuTensor, GpuTensorOps},
+    safetensors_loader::SafeTensorsLoader,
+    huggingface_hub::{HuggingFaceHub, load_model_from_hub},
+    gguf_loader::GGUFLoader,
+    working_llama::WorkingLlamaModel,
+    real_tokenizer::RealTokenizer,
+    basic_model::ModelConfig,
+    types::*,
 };
 
 use axum::{
