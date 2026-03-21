@@ -1,873 +1,604 @@
-# 📡 UniLLM API Reference
+# UniLLM API Reference
 
-Complete API documentation for UniLLM inference engine with examples in multiple programming languages.
+Complete API documentation for UniLLM's clean abstraction layers and model implementations.
 
-## 📋 Table of Contents
+## Core Abstractions
 
-1. [Overview](#overview)
-2. [Authentication](#authentication)
-3. [Base URLs](#base-urls)
-4. [Core Endpoints](#core-endpoints)
-5. [Request/Response Formats](#requestresponse-formats)
-6. [Error Handling](#error-handling)
-7. [Rate Limiting](#rate-limiting)
-8. [Client Libraries](#client-libraries)
-9. [WebSocket Streaming](#websocket-streaming)
-10. [Examples](#examples)
+### TensorCore (`tensor_core.rs`)
 
-## 🌐 Overview
+#### `Tensor` - Universal Tensor Type
 
-UniLLM provides a REST API for high-performance LLM inference with support for both traditional and streaming responses. The API is designed to be compatible with OpenAI's format while providing additional UniLLM-specific features and optimizations.
+```rust
+pub struct Tensor {
+    // Device-agnostic tensor with automatic memory management
+}
 
-### Key Features
-- **OpenAI Compatibility**: Drop-in replacement for OpenAI API
-- **Streaming Support**: Real-time token generation
-- **Batch Processing**: Multiple requests in single call
-- **Cache Analytics**: Detailed cache hit/miss statistics
-- **Performance Metrics**: Real-time performance monitoring
-- **Runtime Detection**: Container vs unikernel mode information
+impl Tensor {
+    // Shape and metadata
+    pub fn shape(&self) -> &[usize];
+    pub fn device(&self) -> &Device;
+    pub fn dtype(&self) -> DataType;
+    pub fn numel(&self) -> usize;
 
-## 🔐 Authentication
+    // Device operations
+    pub fn to_device(&self, device: &Device) -> Result<Tensor>;
+    pub fn is_on_device(&self, device: &Device) -> bool;
 
-UniLLM supports multiple authentication methods:
+    // Data access (when needed)
+    pub fn to_vec<T: Copy>(&self) -> Result<Vec<T>>;
 
-### API Key Authentication
-```bash
-curl -H "Authorization: Bearer YOUR_API_KEY" \
-     -H "Content-Type: application/json" \
-     http://localhost:8080/v1/generate
-```
-
-### Basic Authentication
-```bash
-curl -u username:password \
-     -H "Content-Type: application/json" \
-     http://localhost:8080/v1/generate
-```
-
-### No Authentication (Development)
-```bash
-curl -H "Content-Type: application/json" \
-     http://localhost:8080/v1/generate
-```
-
-## 🌍 Base URLs
-
-### Local Development
-```
-http://localhost:8080
-```
-
-### Production Deployment
-```
-https://api.yourdomain.com
-```
-
-### Container Mode
-```
-http://container-host:8080
-```
-
-### Unikernel Mode
-```
-http://unikernel-ip:8080
-```
-
-## 🔧 Core Endpoints
-
-### Health Check
-
-**GET** `/health`
-
-Check server health and runtime information.
-
-**Response:**
-```json
-{
-  "status": "healthy",
-  "version": "0.1.0",
-  "gpu_target": "cuda",
-  "runtime_mode": "container",
-  "memory_usage_mb": 1024.5,
-  "gpu_memory_usage_mb": 2048.0,
-  "uptime_seconds": 3600,
-  "total_requests": 1500
+    // Operations interface
+    pub fn ops(&self) -> &dyn TensorOps;
 }
 ```
 
-**Example:**
-```bash
-curl http://localhost:8080/health
-```
+#### `Device` - Hardware Abstraction
 
-### Text Generation
+```rust
+#[derive(Debug, Clone, PartialEq)]
+pub enum Device {
+    CPU,
+    CUDA(usize),  // GPU index
+    Metal(usize), // GPU index
+}
 
-**POST** `/v1/generate`
-
-Generate text completion for a given prompt.
-
-**Request Body:**
-```json
-{
-  "prompt": "The future of AI is",
-  "max_tokens": 100,
-  "temperature": 0.7,
-  "top_p": 0.9,
-  "top_k": 50,
-  "stop": ["\n", "END"],
-  "stream": false,
-  "echo": false
+impl Device {
+    pub fn auto() -> Device;  // Automatic best device selection
+    pub fn is_gpu(&self) -> bool;
+    pub fn index(&self) -> Option<usize>;
 }
 ```
 
-**Response:**
-```json
-{
-  "id": "gen-abc123def456",
-  "object": "text_completion",
-  "created": 1699564800,
-  "model": "unillm",
-  "choices": [
-    {
-      "text": "bright and full of possibilities. With advances in machine learning...",
-      "index": 0,
-      "logprobs": null,
-      "finish_reason": "length"
-    }
-  ],
-  "usage": {
-    "prompt_tokens": 5,
-    "completion_tokens": 87,
-    "total_tokens": 92
-  },
-  "unillm_stats": {
-    "inference_time_ms": 245,
-    "cache_hits": 15,
-    "gpu_utilization": 0.85,
-    "memory_efficiency": 0.78
-  }
+#### `TensorOps` - Operation Interface
+
+```rust
+pub trait TensorOps: Send + Sync {
+    // Creation
+    fn zeros(&self, shape: &[usize], dtype: DataType, device: &Device) -> Result<Tensor>;
+    fn ones(&self, shape: &[usize], dtype: DataType, device: &Device) -> Result<Tensor>;
+    fn rand(&self, shape: &[usize], dtype: DataType, device: &Device) -> Result<Tensor>;
+
+    // Basic math
+    fn add(&self, a: &Tensor, b: &Tensor) -> Result<Tensor>;
+    fn mul(&self, a: &Tensor, b: &Tensor) -> Result<Tensor>;
+    fn matmul(&self, a: &Tensor, b: &Tensor) -> Result<Tensor>;
+
+    // Neural network operations
+    fn layer_norm(&self, input: &Tensor, weight: &Tensor, bias: Option<&Tensor>, eps: f32) -> Result<Tensor>;
+    fn rms_norm(&self, input: &Tensor, weight: &Tensor, eps: f32) -> Result<Tensor>;
+    fn embedding(&self, indices: &Tensor, weight: &Tensor) -> Result<Tensor>;
+    fn attention(&self, q: &Tensor, k: &Tensor, v: &Tensor, mask: Option<&Tensor>) -> Result<Tensor>;
+
+    // Activation functions
+    fn relu(&self, input: &Tensor) -> Result<Tensor>;
+    fn silu(&self, input: &Tensor) -> Result<Tensor>;
+    fn gelu(&self, input: &Tensor) -> Result<Tensor>;
+    fn softmax(&self, input: &Tensor, dim: isize) -> Result<Tensor>;
+
+    // Shape operations
+    fn reshape(&self, input: &Tensor, shape: &[usize]) -> Result<Tensor>;
+    fn transpose(&self, input: &Tensor, dim0: usize, dim1: usize) -> Result<Tensor>;
+    fn concat(&self, tensors: &[&Tensor], dim: usize) -> Result<Tensor>;
+    fn slice(&self, input: &Tensor, ranges: &[(usize, usize)]) -> Result<Tensor>;
 }
 ```
 
-### OpenAI Compatible Completions
+#### `ops_fn` - Functional Interface
 
-**POST** `/v1/completions`
+```rust
+pub mod ops_fn {
+    // Tensor creation
+    pub fn zeros(shape: &[usize], dtype: DataType, device: &Device) -> Result<Tensor>;
+    pub fn ones(shape: &[usize], dtype: DataType, device: &Device) -> Result<Tensor>;
+    pub fn rand(shape: &[usize], dtype: DataType, device: &Device) -> Result<Tensor>;
 
-OpenAI-compatible text completion endpoint.
+    // Math operations
+    pub fn add(a: &Tensor, b: &Tensor) -> Result<Tensor>;
+    pub fn mul(a: &Tensor, b: &Tensor) -> Result<Tensor>;
+    pub fn matmul(a: &Tensor, b: &Tensor) -> Result<Tensor>;
+    pub fn scale(input: &Tensor, factor: f32) -> Result<Tensor>;
 
-**Request Body:**
-```json
-{
-  "model": "unillm",
-  "prompt": "Once upon a time",
-  "max_tokens": 50,
-  "temperature": 0.8,
-  "top_p": 1.0,
-  "n": 1,
-  "stream": false,
-  "logprobs": null,
-  "echo": false,
-  "stop": null,
-  "presence_penalty": 0,
-  "frequency_penalty": 0,
-  "best_of": 1,
-  "logit_bias": {},
-  "user": "user123"
+    // Neural network layers
+    pub fn linear(input: &Tensor, weight: &Tensor, bias: Option<&Tensor>) -> Result<Tensor>;
+    pub fn layer_norm(input: &Tensor, weight: &Tensor, bias: Option<&Tensor>, eps: f32) -> Result<Tensor>;
+    pub fn rms_norm(input: &Tensor, weight: &Tensor, eps: f32) -> Result<Tensor>;
+    pub fn embedding(indices: &Tensor, weight: &Tensor) -> Result<Tensor>;
+    pub fn attention(q: &Tensor, k: &Tensor, v: &Tensor, mask: Option<&Tensor>) -> Result<Tensor>;
+
+    // Activations
+    pub fn relu(input: &Tensor) -> Result<Tensor>;
+    pub fn silu(input: &Tensor) -> Result<Tensor>;
+    pub fn gelu(input: &Tensor) -> Result<Tensor>;
+    pub fn softmax(input: &Tensor, dim: isize) -> Result<Tensor>;
+
+    // Shape operations
+    pub fn reshape(input: &Tensor, shape: &[usize]) -> Result<Tensor>;
+    pub fn transpose(input: &Tensor, dim0: usize, dim1: usize) -> Result<Tensor>;
+    pub fn concat(tensors: &[&Tensor], dim: usize) -> Result<Tensor>;
 }
 ```
 
-### Chat Completions
+### ModelCore (`model_core.rs`)
 
-**POST** `/v1/chat/completions`
+#### `Model` - Universal Model Interface
 
-Chat-based completions with conversation history.
+```rust
+pub trait Model: Send + Sync {
+    type Config: ModelConfig;
 
-**Request Body:**
-```json
-{
-  "model": "unillm",
-  "messages": [
-    {
-      "role": "system",
-      "content": "You are a helpful assistant."
-    },
-    {
-      "role": "user",
-      "content": "Hello! How can you help me today?"
-    }
-  ],
-  "max_tokens": 150,
-  "temperature": 0.7,
-  "top_p": 0.9,
-  "stream": false
+    // Model lifecycle
+    fn new(config: Self::Config) -> Result<Self> where Self: Sized;
+    fn from_weights(config: Self::Config, weights: ModelWeights) -> Result<Self> where Self: Sized;
+
+    // Inference
+    fn forward(&self, inputs: &ModelInputs) -> Result<ModelOutputs>;
+    fn generate(&self, prompt: &str, config: &GenerationConfig) -> Result<String>;
+
+    // Configuration and metadata
+    fn config(&self) -> &Self::Config;
+    fn memory_requirements(&self) -> MemoryRequirements;
+    fn to_device(&mut self, device: &Device) -> Result<()>;
 }
 ```
 
-**Response:**
-```json
-{
-  "id": "chatcmpl-abc123",
-  "object": "chat.completion",
-  "created": 1699564800,
-  "model": "unillm",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "Hello! I'm here to help you with a wide variety of tasks..."
-      },
-      "finish_reason": "stop"
-    }
-  ],
-  "usage": {
-    "prompt_tokens": 25,
-    "completion_tokens": 68,
-    "total_tokens": 93
-  }
+#### `ModelConfig` - Configuration Interface
+
+```rust
+pub trait ModelConfig: Clone + Send + Sync + std::fmt::Debug {
+    fn architecture(&self) -> &str;
+    fn vocab_size(&self) -> usize;
+    fn hidden_size(&self) -> usize;
+    fn num_layers(&self) -> usize;
+    fn validate(&self) -> Result<()>;
 }
 ```
 
-### Batch Processing
+#### `model_config!` - Configuration Macro
 
-**POST** `/v1/batch`
-
-Process multiple requests in a single call for improved throughput.
-
-**Request Body:**
-```json
-{
-  "requests": [
-    {
-      "id": "req-1",
-      "prompt": "Translate to French: Hello",
-      "max_tokens": 50
-    },
-    {
-      "id": "req-2",
-      "prompt": "Summarize: AI is transforming...",
-      "max_tokens": 100
-    }
-  ],
-  "batch_size": 32,
-  "parallel": true
-}
-```
-
-**Response:**
-```json
-{
-  "id": "batch-abc123",
-  "object": "batch_completion",
-  "responses": [
-    {
-      "id": "req-1",
-      "generated_text": "Bonjour",
-      "tokens_generated": 2,
-      "status": "completed"
-    },
-    {
-      "id": "req-2",
-      "generated_text": "AI is revolutionizing industries...",
-      "tokens_generated": 45,
-      "status": "completed"
-    }
-  ],
-  "batch_stats": {
-    "total_requests": 2,
-    "successful": 2,
-    "failed": 0,
-    "total_time_ms": 180,
-    "throughput_rps": 11.1
-  }
-}
-```
-
-### Statistics
-
-**GET** `/stats`
-
-Get detailed server statistics and performance metrics.
-
-**Response:**
-```json
-{
-  "server_info": {
-    "version": "0.1.0",
-    "runtime_mode": "unikernel",
-    "gpu_target": "cuda",
-    "uptime_seconds": 7200
-  },
-  "performance": {
-    "total_requests": 5000,
-    "total_tokens_generated": 500000,
-    "average_latency_ms": 185.5,
-    "throughput_rps": 27.8,
-    "p50_latency_ms": 160.0,
-    "p95_latency_ms": 320.0,
-    "p99_latency_ms": 480.0
-  },
-  "cache_stats": {
-    "hit_rate": 0.78,
-    "miss_rate": 0.22,
-    "eviction_rate": 0.05,
-    "memory_usage_mb": 2048.0,
-    "l1_hit_rate": 0.45,
-    "l2_hit_rate": 0.33,
-    "l3_hit_rate": 0.22
-  },
-  "gpu_stats": {
-    "utilization": 0.85,
-    "memory_usage_mb": 18432.0,
-    "memory_total_mb": 24576.0,
-    "temperature_celsius": 72,
-    "power_usage_watts": 350
-  },
-  "memory_stats": {
-    "total_memory_mb": 16384.0,
-    "used_memory_mb": 8192.0,
-    "cache_memory_mb": 2048.0,
-    "available_memory_mb": 6144.0
-  }
-}
-```
-
-### Models
-
-**GET** `/v1/models`
-
-List available models and their capabilities.
-
-**Response:**
-```json
-{
-  "object": "list",
-  "data": [
-    {
-      "id": "unillm",
-      "object": "model",
-      "created": 1699564800,
-      "owned_by": "unillm",
-      "capabilities": [
-        "text-generation",
-        "chat",
-        "streaming",
-        "batch-processing"
-      ],
-      "context_length": 8192,
-      "supported_features": [
-        "hybrid-cache",
-        "gpu-optimization",
-        "unikernel-mode"
-      ]
-    }
-  ]
-}
-```
-
-## 📝 Request/Response Formats
-
-### Standard Parameters
-
-| Parameter | Type | Description | Default |
-|-----------|------|-------------|---------|
-| `prompt` | string | Input text prompt | Required |
-| `max_tokens` | integer | Maximum tokens to generate | 100 |
-| `temperature` | float | Sampling temperature (0.0-2.0) | 1.0 |
-| `top_p` | float | Nucleus sampling threshold | 1.0 |
-| `top_k` | integer | Top-k sampling limit | 50 |
-| `stop` | array | Stop sequences | [] |
-| `stream` | boolean | Enable streaming response | false |
-| `echo` | boolean | Include prompt in response | false |
-
-### UniLLM-Specific Parameters
-
-| Parameter | Type | Description | Default |
-|-----------|------|-------------|---------|
-| `cache_policy` | string | Cache behavior (auto/force/disable) | "auto" |
-| `batch_priority` | string | Batch priority (low/normal/high) | "normal" |
-| `gpu_preference` | string | GPU allocation preference | "auto" |
-| `precision` | string | Inference precision (fp16/fp32/int8) | "fp16" |
-
-### Response Headers
-
-```http
-HTTP/1.1 200 OK
-Content-Type: application/json
-X-UniLLM-Version: 0.1.0
-X-UniLLM-Runtime: unikernel
-X-UniLLM-GPU: cuda
-X-UniLLM-Cache-Hit-Rate: 0.78
-X-UniLLM-Inference-Time-Ms: 245
-X-RateLimit-Limit: 1000
-X-RateLimit-Remaining: 999
-X-RateLimit-Reset: 1699564860
-```
-
-## ❌ Error Handling
-
-### Error Response Format
-
-```json
-{
-  "error": {
-    "type": "invalid_request_error",
-    "code": "invalid_parameter",
-    "message": "Invalid value for 'temperature': must be between 0.0 and 2.0",
-    "param": "temperature",
-    "request_id": "req-abc123def456"
-  },
-  "unillm_debug": {
-    "timestamp": "2023-11-09T12:00:00Z",
-    "runtime_mode": "container",
-    "gpu_status": "healthy",
-    "memory_available_mb": 1024
-  }
-}
-```
-
-### Error Codes
-
-| Code | HTTP Status | Description |
-|------|-------------|-------------|
-| `invalid_request_error` | 400 | Invalid request format or parameters |
-| `authentication_error` | 401 | Invalid or missing authentication |
-| `permission_error` | 403 | Insufficient permissions |
-| `not_found_error` | 404 | Endpoint or resource not found |
-| `rate_limit_error` | 429 | Rate limit exceeded |
-| `server_error` | 500 | Internal server error |
-| `gpu_error` | 503 | GPU unavailable or error |
-| `memory_error` | 503 | Insufficient memory |
-
-### Retry Logic
-
-```python
-import time
-import requests
-
-def make_request_with_retry(url, data, max_retries=3):
-    for attempt in range(max_retries):
-        try:
-            response = requests.post(url, json=data)
-
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 429:
-                # Rate limited, wait and retry
-                retry_after = int(response.headers.get('Retry-After', 60))
-                time.sleep(retry_after)
-                continue
-            elif response.status_code >= 500:
-                # Server error, retry with exponential backoff
-                time.sleep(2 ** attempt)
-                continue
-            else:
-                # Client error, don't retry
-                response.raise_for_status()
-
-        except requests.RequestException as e:
-            if attempt == max_retries - 1:
-                raise e
-            time.sleep(2 ** attempt)
-
-    raise Exception("Max retries exceeded")
-```
-
-## 🚦 Rate Limiting
-
-UniLLM implements adaptive rate limiting based on resource usage:
-
-### Rate Limit Headers
-
-```http
-X-RateLimit-Limit: 1000          # Requests per hour
-X-RateLimit-Remaining: 999       # Remaining requests
-X-RateLimit-Reset: 1699564860    # Reset timestamp
-X-RateLimit-Type: adaptive       # Rate limit type
-```
-
-### Rate Limit Tiers
-
-| Tier | RPM | Tokens/Min | Concurrent | Price |
-|------|-----|------------|------------|-------|
-| Free | 100 | 10,000 | 3 | $0 |
-| Pro | 1,000 | 100,000 | 10 | $20/month |
-| Enterprise | 10,000 | 1,000,000 | 50 | Custom |
-
-## 📚 Client Libraries
-
-### Python Client
-
-```python
-# pip install unillm-client
-
-import unillm
-
-client = unillm.Client(api_key="your-api-key", base_url="http://localhost:8080")
-
-# Simple generation
-response = client.generate(
-    prompt="The future of AI is",
-    max_tokens=100,
-    temperature=0.7
-)
-print(response.text)
-
-# Streaming generation
-for token in client.generate_stream(
-    prompt="Tell me a story about",
-    max_tokens=200
-):
-    print(token, end="", flush=True)
-
-# Chat completion
-response = client.chat.completions.create(
-    messages=[
-        {"role": "user", "content": "Hello!"}
-    ],
-    max_tokens=50
-)
-print(response.choices[0].message.content)
-
-# Batch processing
-responses = client.batch_generate([
-    {"prompt": "Translate: Hello", "max_tokens": 10},
-    {"prompt": "Summarize: AI is...", "max_tokens": 50}
-])
-```
-
-### JavaScript/Node.js Client
-
-```javascript
-// npm install unillm-client
-
-const UniLLM = require('unillm-client');
-
-const client = new UniLLM({
-  apiKey: 'your-api-key',
-  baseURL: 'http://localhost:8080'
+```rust
+// Automatically generates ModelConfig implementation
+model_config!(YourConfig {
+    vocab_size: usize = 32000,
+    hidden_size: usize = 4096,
+    num_hidden_layers: usize = 32,  // or n_layer: usize
+    // ... other fields with defaults
 });
 
-// Simple generation
-async function generate() {
-  const response = await client.generate({
-    prompt: 'The future of AI is',
-    maxTokens: 100,
-    temperature: 0.7
-  });
-
-  console.log(response.text);
-}
-
-// Streaming generation
-async function generateStream() {
-  const stream = await client.generateStream({
-    prompt: 'Tell me a story about',
-    maxTokens: 200
-  });
-
-  for await (const chunk of stream) {
-    process.stdout.write(chunk.text);
-  }
-}
-
-// Chat completion
-async function chat() {
-  const response = await client.chat.completions.create({
-    messages: [
-      { role: 'user', content: 'Hello!' }
-    ],
-    maxTokens: 50
-  });
-
-  console.log(response.choices[0].message.content);
+// Expands to:
+impl Default for YourConfig { /* ... */ }
+impl ModelConfig for YourConfig {
+    fn architecture(&self) -> &str { "YourConfig" }
+    fn vocab_size(&self) -> usize { self.vocab_size }
+    fn hidden_size(&self) -> usize {
+        // Tries hidden_size, then d_model
+        self.hidden_size  // or self.d_model
+    }
+    fn num_layers(&self) -> usize {
+        // Tries num_hidden_layers, then n_layer
+        self.num_hidden_layers  // or self.n_layer
+    }
+    fn validate(&self) -> Result<()> { /* validation logic */ }
 }
 ```
 
-### Go Client
+#### Input/Output Types
 
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-
-    "github.com/unillm/go-client"
-)
-
-func main() {
-    client := unillm.NewClient("your-api-key", "http://localhost:8080")
-
-    // Simple generation
-    response, err := client.Generate(context.Background(), &unillm.GenerateRequest{
-        Prompt:      "The future of AI is",
-        MaxTokens:   100,
-        Temperature: 0.7,
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    fmt.Println(response.Text)
-
-    // Streaming generation
-    stream, err := client.GenerateStream(context.Background(), &unillm.GenerateRequest{
-        Prompt:    "Tell me a story about",
-        MaxTokens: 200,
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    for {
-        chunk, err := stream.Recv()
-        if err != nil {
-            break
-        }
-        fmt.Print(chunk.Text)
-    }
-}
-```
-
-### cURL Examples
-
-```bash
-# Simple generation
-curl -X POST http://localhost:8080/v1/generate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "The future of AI is",
-    "max_tokens": 100,
-    "temperature": 0.7
-  }'
-
-# Streaming generation
-curl -X POST http://localhost:8080/v1/generate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "Tell me a story",
-    "max_tokens": 200,
-    "stream": true
-  }'
-
-# Chat completion
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "user", "content": "Hello!"}
-    ],
-    "max_tokens": 50
-  }'
-```
-
-## 🔌 WebSocket Streaming
-
-For real-time streaming with lower latency:
-
-### WebSocket Connection
-
-```javascript
-const ws = new WebSocket('ws://localhost:8080/v1/stream');
-
-ws.onopen = function() {
-    // Send generation request
-    ws.send(JSON.stringify({
-        type: 'generate',
-        prompt: 'The future of AI is',
-        max_tokens: 100,
-        temperature: 0.7
-    }));
-};
-
-ws.onmessage = function(event) {
-    const data = JSON.parse(event.data);
-
-    if (data.type === 'token') {
-        // New token generated
-        console.log(data.token);
-    } else if (data.type === 'complete') {
-        // Generation complete
-        console.log('Generation finished');
-        console.log('Stats:', data.stats);
-    } else if (data.type === 'error') {
-        // Error occurred
-        console.error('Error:', data.error);
-    }
-};
-```
-
-### Server-Sent Events (SSE)
-
-```javascript
-const eventSource = new EventSource('http://localhost:8080/v1/generate-sse', {
-    method: 'POST',
-    headers: {
-        'Content-Type': 'application/json'
+```rust
+#[derive(Debug, Clone)]
+pub enum ModelInputs {
+    Text {
+        input_ids: Tensor,
+        attention_mask: Option<Tensor>,
+        position_ids: Option<Tensor>,
     },
-    body: JSON.stringify({
-        prompt: 'The future of AI is',
-        max_tokens: 100,
-        stream: true
-    })
-});
+    Image {
+        pixel_values: Tensor,
+        image_mask: Option<Tensor>,
+    },
+    Multimodal {
+        input_ids: Tensor,
+        pixel_values: Option<Tensor>,
+        attention_mask: Option<Tensor>,
+        image_mask: Option<Tensor>,
+    },
+    Audio {
+        input_features: Tensor,
+        attention_mask: Option<Tensor>,
+    },
+}
 
-eventSource.onmessage = function(event) {
-    const data = JSON.parse(event.data);
+#[derive(Debug, Clone)]
+pub enum ModelOutputs {
+    Logits {
+        logits: Tensor,
+        hidden_states: Option<Tensor>,
+    },
+    Embeddings {
+        embeddings: Tensor,
+        pooled: Option<Tensor>,
+    },
+    Multimodal {
+        text_logits: Option<Tensor>,
+        image_features: Option<Tensor>,
+        cross_attention: Option<Tensor>,
+    },
+}
+```
 
-    if (data.choices && data.choices[0].delta) {
-        process.stdout.write(data.choices[0].delta.content || '');
-    }
+#### Generation Configuration
 
-    if (data.choices && data.choices[0].finish_reason) {
-        eventSource.close();
-        console.log('\nGeneration complete');
-    }
+```rust
+#[derive(Debug, Clone)]
+pub struct GenerationConfig {
+    pub max_new_tokens: usize,
+    pub temperature: f32,
+    pub top_p: f32,
+    pub top_k: Option<usize>,
+    pub do_sample: bool,
+    pub repetition_penalty: f32,
+    pub stop_sequences: Vec<String>,
+    pub eos_token_id: u32,
+    pub pad_token_id: u32,
+}
+```
+
+### WeightLoaderCore (`weight_loader_core.rs`)
+
+#### `WeightLoader` - Format-Agnostic Loading
+
+```rust
+pub struct WeightLoader;
+
+impl WeightLoader {
+    // Format-specific loaders
+    pub fn from_safetensors<P: AsRef<Path>>(path: P) -> Result<ModelWeights>;
+    pub fn from_gguf<P: AsRef<Path>>(path: P) -> Result<ModelWeights>;
+    pub fn from_pytorch<P: AsRef<Path>>(path: P) -> Result<ModelWeights>;
+
+    // Automatic format detection
+    pub fn auto_detect<P: AsRef<Path>>(path: P) -> Result<ModelWeights>;
+
+    // Remote loading (planned)
+    pub fn from_hf_hub(repo_id: &str, filename: &str) -> Result<ModelWeights>;
+}
+```
+
+#### `ModelWeights` - Weight Container
+
+```rust
+pub struct ModelWeights {
+    // Internal storage abstracted away
+}
+
+impl ModelWeights {
+    pub fn get(&self, key: &str) -> Option<&Tensor>;
+    pub fn keys(&self) -> impl Iterator<Item = &str>;
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+
+    // Metadata
+    pub fn metadata(&self) -> &WeightMetadata;
+    pub fn format(&self) -> WeightFormat;
+
+    // Device management
+    pub fn to_device(&mut self, device: &Device) -> Result<()>;
+}
+```
+
+## Model Implementations
+
+### Supported Model Families
+
+All models implement the `Model` trait with consistent patterns:
+
+```rust
+// Available in models_v2::
+pub use llama::LlamaModelV2;      // Llama, Llama2, Code Llama, etc.
+pub use qwen::QwenModelV2;        // Qwen, Qwen1.5, Qwen2, QwenVL
+pub use gemma::GemmaModelV2;      // Gemma-2B, Gemma-7B
+pub use phi::PhiModelV2;          // Phi-1, Phi-1.5, Phi-2, Phi-3
+pub use deepseek::DeepSeekModelV2;// DeepSeek-Coder, DeepSeek-Chat
+pub use yi::YiModelV2;            // Yi-6B, Yi-34B, Yi-Chat
+pub use baichuan::BaichuanModelV2;// Baichuan-7B, Baichuan-13B
+pub use internlm::InternLMModelV2;// InternLM, InternLM2
+pub use chatglm::ChatGLMModelV2;  // ChatGLM-6B, ChatGLM2-6B, ChatGLM3
+pub use falcon::FalconModelV2;    // Falcon-7B, Falcon-40B
+pub use bert::BertModelV2;        // BERT, RoBERTa, etc.
+pub use t5::T5ModelV2;            // T5, UL2, Flan-T5
+pub use whisper::WhisperModelV2;  // Whisper speech recognition
+pub use clip::ClipModelV2;        // CLIP vision-language
+pub use llava::LlavaModelV2;      // LLaVA multimodal
+pub use mamba::MambaModelV2;      // Mamba state-space models
+pub use minicpm::MiniCPMModelV2;  // MiniCPM efficient models
+```
+
+### Common Usage Pattern
+
+All models follow the same interface:
+
+```rust
+use unillm::models_v2::llama::{LlamaModelV2, LlamaConfig};
+use unillm::{Model, ModelInputs, ModelOutputs, GenerationConfig, WeightLoader};
+
+// 1. Create configuration
+let config = LlamaConfig {
+    vocab_size: 32000,
+    hidden_size: 4096,
+    num_hidden_layers: 32,
+    num_attention_heads: 32,
+    ..Default::default()
 };
 
-eventSource.onerror = function(event) {
-    console.error('SSE error:', event);
-    eventSource.close();
+// 2. Load model with weights
+let weights = WeightLoader::from_safetensors("model.safetensors")?;
+let model = LlamaModelV2::from_weights(config, weights)?;
+
+// 3. Prepare inputs
+let input_tensor = ops_fn::zeros(&[1, 10], DataType::Int64, &Device::CPU)?;
+let inputs = ModelInputs::Text {
+    input_ids: input_tensor,
+    attention_mask: None,
+    position_ids: None,
 };
+
+// 4. Run inference
+let outputs = model.forward(&inputs)?;
+match outputs {
+    ModelOutputs::Logits { logits, .. } => {
+        // Process logits
+        println!("Output shape: {:?}", logits.shape());
+    },
+    _ => unreachable!(),
+}
+
+// 5. Generate text
+let gen_config = GenerationConfig::default();
+let response = model.generate("Hello world", &gen_config)?;
 ```
 
-## 📊 Advanced Examples
+## Inference Pipeline (`inference.rs`)
 
-### Performance Monitoring
+### `InferencePipeline` - End-to-End Generation
 
-```python
-import unillm
-import time
+```rust
+pub struct InferencePipeline {
+    // Internal model, tokenizer, and sampler
+}
 
-client = unillm.Client(base_url="http://localhost:8080")
+impl InferencePipeline {
+    pub fn new(model: impl Model, tokenizer: Tokenizer) -> Self;
 
-# Monitor inference performance
-def benchmark_inference(num_requests=100):
-    latencies = []
+    // High-level generation
+    pub fn generate(&self, prompt: &str, config: &GenerationConfig) -> Result<String>;
 
-    for i in range(num_requests):
-        start_time = time.time()
+    // Low-level token generation
+    pub fn generate_tokens(&self, input_tokens: &[u32], config: &GenerationConfig) -> Result<Vec<u32>>;
 
-        response = client.generate(
-            prompt=f"Request {i}: Tell me about AI",
-            max_tokens=50
-        )
-
-        latency = (time.time() - start_time) * 1000
-        latencies.append(latency)
-
-        print(f"Request {i}: {latency:.1f}ms, "
-              f"Cache hits: {response.unillm_stats.cache_hits}")
-
-    print(f"\nBenchmark Results:")
-    print(f"Average latency: {sum(latencies) / len(latencies):.1f}ms")
-    print(f"P95 latency: {sorted(latencies)[int(0.95 * len(latencies))]:.1f}ms")
-
-    # Get server stats
-    stats = client.get_stats()
-    print(f"Cache hit rate: {stats.cache_stats.hit_rate:.2%}")
-    print(f"GPU utilization: {stats.gpu_stats.utilization:.2%}")
-
-benchmark_inference()
+    // Configuration access
+    pub fn model_config(&self) -> &dyn ModelConfig;
+    pub fn tokenizer(&self) -> &Tokenizer;
+}
 ```
 
-### Adaptive Batch Processing
+### `InferencePipelineBuilder` - Builder Pattern
 
-```python
-import asyncio
-import unillm
+```rust
+pub struct InferencePipelineBuilder;
 
-client = unillm.AsyncClient(base_url="http://localhost:8080")
+impl InferencePipelineBuilder {
+    pub fn new() -> Self;
+    pub fn with_model_config(self, config: impl ModelConfig) -> Self;
+    pub fn with_tokenizer(self, tokenizer: Tokenizer) -> Self;
+    pub fn build(self) -> Result<InferencePipeline>;
+}
 
-async def adaptive_batch_processing(requests):
-    # Start with small batch size
-    batch_size = 4
-    max_batch_size = 32
-
-    while requests:
-        # Take current batch
-        current_batch = requests[:batch_size]
-        requests = requests[batch_size:]
-
-        start_time = time.time()
-
-        # Process batch
-        responses = await client.batch_generate(current_batch)
-
-        batch_time = time.time() - start_time
-        throughput = len(current_batch) / batch_time
-
-        print(f"Batch size: {batch_size}, "
-              f"Throughput: {throughput:.1f} req/s")
-
-        # Adapt batch size based on performance
-        if throughput > 10 and batch_size < max_batch_size:
-            batch_size = min(batch_size * 2, max_batch_size)
-        elif throughput < 5 and batch_size > 1:
-            batch_size = max(batch_size // 2, 1)
-
-        # Process responses
-        for response in responses:
-            print(f"Generated: {response.text[:50]}...")
-
-# Example usage
-requests = [
-    {"prompt": f"Question {i}: What is AI?", "max_tokens": 50}
-    for i in range(100)
-]
-
-asyncio.run(adaptive_batch_processing(requests))
+// Usage:
+let pipeline = InferencePipelineBuilder::new()
+    .with_model_config(config)
+    .with_tokenizer(tokenizer)
+    .build()?;
 ```
 
-### Cache Optimization
+### `Sampler` - Text Generation Strategies
 
-```python
-import unillm
+```rust
+pub struct Sampler;
 
-client = unillm.Client(base_url="http://localhost:8080")
+impl Sampler {
+    pub fn new() -> Self;
 
-# Optimize for cache hits with common prefixes
-def cache_optimized_generation():
-    # Use common prefixes that can be cached
-    common_prefixes = [
-        "Translate the following text to French:",
-        "Summarize the following article:",
-        "Answer the following question:",
-        "Generate a creative story about"
-    ]
+    // Sampling strategies
+    pub fn sample_greedy(&self, logits: &[f32]) -> Result<u32>;
+    pub fn sample_temperature(&self, logits: &[f32], temperature: f32) -> Result<u32>;
+    pub fn sample_top_p(&self, logits: &[f32], top_p: f32, temperature: f32) -> Result<u32>;
+    pub fn sample_top_k(&self, logits: &[f32], top_k: usize, temperature: f32) -> Result<u32>;
+}
+```
 
-    requests = []
-    for prefix in common_prefixes:
-        for i in range(10):
-            requests.append({
-                "prompt": f"{prefix} {generate_content(i)}",
-                "max_tokens": 100,
-                "cache_policy": "force"  # Force caching of prefix
-            })
+## Tokenization (`tokenizer.rs`)
 
-    # Process requests to build cache
-    print("Building cache...")
-    for request in requests[:20]:  # Prime the cache
-        client.generate(**request)
+### `Tokenizer` - Text Processing
 
-    # Now process remaining requests with cache hits
-    print("Processing with cache...")
-    total_cache_hits = 0
-    for request in requests[20:]:
-        response = client.generate(**request)
-        total_cache_hits += response.unillm_stats.cache_hits
-        print(f"Cache hits: {response.unillm_stats.cache_hits}")
+```rust
+pub struct Tokenizer {
+    // Internal tokenizer state
+}
 
-    print(f"Total cache hits: {total_cache_hits}")
+impl Tokenizer {
+    pub fn new() -> Self;
 
-def generate_content(i):
-    return f"Example content number {i} for testing cache optimization."
+    // Basic operations
+    pub fn encode(&self, text: &str) -> Vec<u32>;
+    pub fn decode(&self, tokens: &[u32]) -> String;
 
-cache_optimized_generation()
+    // Configuration
+    pub fn vocab_size(&self) -> usize;
+    pub fn eos_token_id(&self) -> u32;
+    pub fn bos_token_id(&self) -> u32;
+    pub fn pad_token_id(&self) -> u32;
+
+    // Advanced features (planned)
+    pub fn encode_batch(&self, texts: &[&str]) -> Vec<Vec<u32>>;
+    pub fn decode_batch(&self, token_batches: &[&[u32]]) -> Vec<String>;
+}
+```
+
+## Sampling (`sampler.rs`)
+
+### Sampling Strategies
+
+```rust
+pub enum SamplingStrategy {
+    Greedy,
+    Temperature { temperature: f32 },
+    TopP { top_p: f32, temperature: f32 },
+    TopK { top_k: usize, temperature: f32 },
+    Nucleus { top_p: f32, top_k: Option<usize>, temperature: f32 },
+}
+
+pub struct AdvancedSampler {
+    strategy: SamplingStrategy,
+}
+
+impl AdvancedSampler {
+    pub fn new(strategy: SamplingStrategy) -> Self;
+    pub fn sample(&self, logits: &[f32]) -> Result<u32>;
+    pub fn sample_batch(&self, logits_batch: &[&[f32]]) -> Result<Vec<u32>>;
+}
+```
+
+## Types and Utilities (`types.rs`)
+
+### Error Types
+
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum ModelError {
+    #[error("Model initialization failed: {0}")]
+    InitializationFailed(String),
+
+    #[error("Computation failed: {0}")]
+    ComputationFailed(String),
+
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
+    #[error("Device error: {0}")]
+    DeviceError(String),
+
+    #[error("Weight loading error: {0}")]
+    WeightLoadingError(String),
+}
+
+pub type ModelResult<T> = std::result::Result<T, ModelError>;
+```
+
+### Memory Management
+
+```rust
+#[derive(Debug, Clone)]
+pub struct MemoryRequirements {
+    pub gpu_memory: usize,        // GPU memory in bytes
+    pub cpu_memory: usize,        // CPU memory in bytes
+    pub kv_cache_memory: usize,   // KV cache memory in bytes
+    pub peak_memory: usize,       // Peak memory usage in bytes
+}
+```
+
+## Testing and Validation
+
+### Test Utilities
+
+```rust
+pub mod test_utils {
+    // Model testing helpers
+    pub fn create_dummy_config<C: ModelConfig + Default>() -> C;
+    pub fn create_test_tensor(shape: &[usize]) -> Tensor;
+    pub fn assert_tensor_shape(tensor: &Tensor, expected: &[usize]);
+
+    // Performance testing
+    pub fn benchmark_model_forward<M: Model>(model: &M, inputs: &ModelInputs) -> Duration;
+    pub fn benchmark_generation<M: Model>(model: &M, prompt: &str) -> Duration;
+}
+```
+
+## Performance Monitoring (`simple_observability.rs`)
+
+### Metrics Collection
+
+```rust
+pub struct InferenceMetrics {
+    pub prompt_tokens: usize,
+    pub generated_tokens: usize,
+    pub total_tokens: usize,
+    pub inference_time_ms: f64,
+    pub tokens_per_second: f64,
+    pub memory_usage_mb: f64,
+}
+
+pub struct MetricsCollector {
+    // Internal state
+}
+
+impl MetricsCollector {
+    pub fn new() -> Self;
+    pub fn record_inference(&mut self, metrics: InferenceMetrics);
+    pub fn get_stats(&self) -> InferenceStats;
+    pub fn reset(&mut self);
+}
 ```
 
 ---
 
-This API reference provides comprehensive documentation for integrating with UniLLM. For additional examples and advanced usage patterns, please refer to the client library documentation and example repositories.
+## Example Usage
+
+### Complete End-to-End Example
+
+```rust
+use unillm::prelude::*;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // 1. Set up model configuration
+    let config = LlamaConfig {
+        vocab_size: 32000,
+        hidden_size: 4096,
+        num_hidden_layers: 32,
+        num_attention_heads: 32,
+        intermediate_size: 11008,
+        max_position_embeddings: 2048,
+        ..Default::default()
+    };
+
+    // 2. Load model weights
+    let weights = WeightLoader::from_safetensors("llama-7b-hf/model.safetensors")?;
+    let mut model = LlamaModelV2::from_weights(config, weights)?;
+
+    // 3. Move to GPU if available
+    let device = Device::auto();
+    model.to_device(&device)?;
+
+    // 4. Create tokenizer
+    let tokenizer = Tokenizer::new();
+
+    // 5. Build inference pipeline
+    let pipeline = InferencePipeline::new(model, tokenizer);
+
+    // 6. Configure generation
+    let gen_config = GenerationConfig {
+        max_new_tokens: 100,
+        temperature: 0.7,
+        top_p: 0.9,
+        do_sample: true,
+        ..Default::default()
+    };
+
+    // 7. Generate text
+    let response = pipeline.generate("The future of AI is", &gen_config)?;
+    println!("Generated: {}", response);
+
+    Ok(())
+}
+```
+
+This API design emphasizes clean abstractions, consistent patterns, and ease of use while providing the flexibility to extend and optimize for different use cases.

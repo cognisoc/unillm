@@ -1,70 +1,52 @@
-//! Runtime crate for model execution and management
+//! UniLLM Runtime
 //!
-//! Starting with minimal working implementations that compile and pass tests.
+//! High-performance inference runtime for large language models.
+//!
+//! This crate provides a clean, solid abstraction system for LLM inference
+//! with support for multiple model architectures and deployment targets.
 
-pub mod types;
-pub mod tensor_ops;
-pub mod gpu_tensor_ops;
-pub mod basic_model;
-// pub mod models;  // Temporarily disabled - has import conflicts with kv crate
-pub mod gpu_model;
-// pub mod image_processing;  // Multimodal image processing - temporarily disabled
-// pub mod openai_vision_api; // OpenAI Vision API compatibility - temporarily disabled
-pub mod model_loader;
-pub mod safetensors_loader;  // Production SafeTensors support
-pub mod huggingface_hub;  // HuggingFace Hub integration
-pub mod gguf_loader;  // GGUF quantized model support
+// === CORE ABSTRACTION LAYERS ===
+
+/// Unified tensor operations and device management
+pub mod tensor_core;
+
+/// Model trait and configuration system
+pub mod model_core;
+
+/// Weight loading from various formats
+pub mod weight_loader_core;
+
+// === MODEL IMPLEMENTATIONS ===
+
+/// Clean model implementations using solid abstractions
+pub mod models_v2;
+
+// === INFERENCE PIPELINE ===
+
+/// Tokenization utilities
 pub mod tokenizer;
+
+/// Basic inference implementation
 pub mod inference;
-pub mod flash_attention;
-// pub mod async_flash_attention;  // Temporarily disabled
-pub mod kv_cache;
-// pub mod async_kv_cache;  // Temporarily disabled
-pub mod request_batching;
-// pub mod gpu_aware_batching;  // Temporarily disabled
-// pub mod memory_pool;  // Temporarily disabled
-// pub mod gpu_tensor_ops_v2;  // Temporarily disabled
-pub mod quantization;
-// pub mod distributed;  // Temporarily disabled
-pub mod model_registry;
-// pub mod streaming_inference;  // Temporarily disabled
-pub mod simple_observability;
-// pub mod dashboard;  // Temporarily disabled
-pub mod real_model_loader;
-pub mod real_tokenizer;
+
+/// Sampling and decoding
 pub mod sampler;
-pub mod decode_loop;
-// pub mod structured_generation;  // Temporarily disabled
-// pub mod advanced_features;  // Temporarily disabled
-// pub mod production_server;  // Temporarily disabled - uses disabled modules
-pub mod production_server_simple;
-pub mod production_server_new;  // New working production server
-// pub mod enhanced_kv_cache;  // Temporarily disabled
-// pub mod multi_gpu;  // Temporarily disabled
-// pub mod embedding_models;  // Temporarily disabled - has type conflicts
-// pub mod enhanced_api_server;  // Temporarily disabled
 
-// Advanced attention mechanisms and model support
-pub mod paged_attention;  // Re-enabled for vLLM-style memory management
-pub mod flash_attention_v2;  // Re-enabling FlashAttention-2
-pub mod radix_attention;  // SGLang-style RadixAttention for prefix sharing
-// pub mod tensor_parallel;  // Multi-GPU tensor parallelism - temporarily disabled for compilation
-// pub mod intelligent_distribution;  // Revolutionary auto-optimization - temporarily disabled
-// pub mod transparent_tensor_ops;  // Transparent multi-GPU tensor operations - temporarily disabled
-// pub mod model_architectures;  // Temporarily disabled
-// pub mod model_implementations;  // Temporarily disabled
-// pub mod model_factory;  // Temporarily disabled - has dependency issues
-// pub mod qwen_models;  // Temporarily disabled
-// pub mod continuous_batching;  // Complex implementation - temporarily disabled for stability
-pub mod working_llama;
+// === UTILITIES ===
 
-// High-level implementations
-pub mod simple;
-pub mod llama;
-pub mod optimized_llama;
-pub mod websocket;
+/// Type definitions
+pub mod types;
 
-/// Runtime implementation (placeholder)
+/// Simple observability
+pub mod simple_observability;
+
+// === RE-EXPORTS ===
+
+pub use tensor_core::{Tensor, Device, DataType};
+pub use model_core::{Model, ModelInputs, ModelOutputs, GenerationConfig, MemoryRequirements, ModelWeights};
+pub use weight_loader_core::{WeightLoader};
+
+/// Main runtime instance
 pub struct Runtime {
     _placeholder: (),
 }
@@ -75,5 +57,11 @@ impl Runtime {
         Self {
             _placeholder: (),
         }
+    }
+}
+
+impl Default for Runtime {
+    fn default() -> Self {
+        Self::new()
     }
 }

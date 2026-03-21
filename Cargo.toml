@@ -14,6 +14,7 @@ tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
+anyhow = "1.0"
 async-trait = "0.1"
 futures = "0.3"
 uuid = { version = "1.0", features = ["v4"] }
@@ -36,8 +37,8 @@ rand = "0.8"
 # Utilities
 bytemuck = "1.0"
 
-[package]
-name = "unillm"
+# Package metadata (for workspace)
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 description = "High-performance LLM inference engine with hybrid cache and GPU optimization"
@@ -45,51 +46,6 @@ license = "Apache-2.0"
 repository = "https://github.com/unillm/unillm"
 keywords = ["llm", "inference", "gpu", "cache", "performance"]
 categories = ["science", "concurrency", "hardware-support"]
-
-[dependencies]
-# Internal crates
-kv = { path = "crates/kv" }
-scheduler = { path = "crates/scheduler" }
-# kernels = { path = "crates/kernels" }    # Temporarily disabled
-inference = { path = "crates/inference" }
-
-# Core dependencies from workspace
-tokio = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-async-trait = { workspace = true }
-clap = { version = "4.0", features = ["derive"] }
-
-# HTTP server for API
-axum = "0.7"
-tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "compression-br"] }
-reqwest = { version = "0.11", features = ["json"] }
-
-# Tracing and logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-[features]
-default = []  # Temporarily disable GPU features until kernels crate is fixed
-# cuda = ["kernels/cuda"]       # Temporarily disabled
-# hip = ["kernels/hip"]         # Temporarily disabled
-benchmarking = ["inference/benchmarking"]
-
-# GPU vendor-specific features (temporarily disabled)
-# nvidia = ["cuda"]
-# amd = ["hip"]
-
-# Unikernel support
-unikernel = []
-nanos = ["unikernel"]
-unikraft = ["unikernel"]
-hermit = ["unikernel"]
-
-# Optimization levels
-debug-optimizations = []
-release-optimizations = []
 
 [profile.release]
 opt-level = 3
@@ -109,19 +65,3 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 
-# Build script configuration
-[build-dependencies]
-cc = "1.0"
-
-[[bin]]
-name = "unillm-server"
-path = "src/server.rs"
-
-[[bin]]
-name = "unillm-benchmark"
-path = "src/benchmark.rs"
-required-features = ["benchmarking"]
-
-[[bin]]
-name = "unillm-client"
-path = "src/client.rs"

@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::PathBuf;
 
 /// Data types supported by tensors
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,24 +54,85 @@ impl fmt::Display for Device {
     }
 }
 
-/// Tensor structure
+/// Tensor structure with real data storage
 #[derive(Debug, Clone)]
 pub struct Tensor {
     pub shape: Vec<usize>,
     pub dtype: DataType,
     pub device: Device,
-    pub data_ptr: usize, // Pointer to actual data (0 for unallocated)
+    pub data: TensorData,
     pub strides: Vec<usize>,
+}
+
+/// Tensor data storage
+#[derive(Debug, Clone)]
+pub enum TensorData {
+    F32(Vec<f32>),
+    F16(Vec<u16>), // f16 as u16
+    BF16(Vec<u16>), // bf16 as u16
+    I32(Vec<i32>),
+    I64(Vec<i64>),
+    I8(Vec<i8>),
+    Bool(Vec<bool>),
+    Unallocated, // For lazy loading
 }
 
 impl Tensor {
     pub fn new(shape: Vec<usize>, dtype: DataType, device: Device) -> Self {
         let strides = calculate_strides(&shape);
+        let numel = shape.iter().product::<usize>();
+
+        let data = match dtype {
+            DataType::Float32 => TensorData::F32(vec![0.0; numel]),
+            DataType::Float16 => TensorData::F16(vec![0; numel]),
+            DataType::BFloat16 => TensorData::BF16(vec![0; numel]),
+            DataType::Int32 => TensorData::I32(vec![0; numel]),
+            DataType::Int64 => TensorData::I64(vec![0; numel]),
+            DataType::Int8 => TensorData::I8(vec![0; numel]),
+            DataType::Bool => TensorData::Bool(vec![false; numel]),
+            DataType::Int4 => TensorData::I8(vec![0; (numel + 1) / 2]), // Packed
+        };
+
         Self {
             shape,
             dtype,
             device,
-            data_ptr: 0,
+            data,
+            strides,
+        }
+    }
+
+    pub fn zeros(shape: &[usize]) -> Self {
+        Self::new(shape.to_vec(), DataType::Float32, Device::CPU)
+    }
+
+    pub fn ones(shape: &[usize]) -> Self {
+        let mut tensor = Self::new(shape.to_vec(), DataType::Float32, Device::CPU);
+        if let TensorData::F32(ref mut data) = tensor.data {
+            data.fill(1.0);
+        }
+        tensor
+    }
+
+    pub fn from_data(shape: Vec<usize>, data: TensorData, device: Device) -> Self {
+        let dtype = match &data {
+            TensorData::F32(_) => DataType::Float32,
+            TensorData::F16(_) => DataType::Float16,
+            TensorData::BF16(_) => DataType::BFloat16,
+            TensorData::I32(_) => DataType::Int32,
+            TensorData::I64(_) => DataType::Int64,
+            TensorData::I8(_) => DataType::Int8,
+            TensorData::Bool(_) => DataType::Bool,
+            TensorData::Unallocated => DataType::Float32, // Default
+        };
+
+        let strides = calculate_strides(&shape);
+
+        Self {
+            shape,
+            dtype,
+            device,
+            data,
             strides,
         }
     }
@@ -81,6 +143,87 @@ impl Tensor {
 
     pub fn size_bytes(&self) -> usize {
         self.numel() * self.dtype.size_bytes()
+    }
+
+    pub fn index_select(&self, _dim: usize, _indices: &Tensor) -> anyhow::Result<Tensor> {
+        // Placeholder implementation
+        Ok(self.clone())
+    }
+
+    pub fn matmul(&self, other: &Tensor) -> anyhow::Result<Tensor> {
+        // Basic matrix multiplication for F32 tensors
+        if self.shape.len() != 2 || other.shape.len() != 2 {
+            return Err(anyhow::anyhow!("matmul requires 2D tensors"));
+        }
+
+        if self.shape[1] != other.shape[0] {
+            return Err(anyhow::anyhow!("matmul dimension mismatch: {} x {} != {} x {}",
+                self.shape[0], self.shape[1], other.shape[0], other.shape[1]));
+        }
+
+        let result_shape = vec![self.shape[0], other.shape[1]];
+        let mut result = Tensor::zeros(&result_shape);
+
+        // Perform computation based on data types
+        match (&self.data, &other.data, &mut result.data) {
+            (TensorData::F32(a), TensorData::F32(b), TensorData::F32(c)) => {
+                let m = self.shape[0];
+                let n = other.shape[1];
+                let k = self.shape[1];
+
+                for i in 0..m {
+                    for j in 0..n {
+                        let mut sum = 0.0;
+                        for kk in 0..k {
+                            sum += a[i * k + kk] * b[kk * n + j];
+                        }
+                        c[i * n + j] = sum;
+                    }
+                }
+            }
+            _ => return Err(anyhow::anyhow!("matmul not implemented for these data types")),
+        }
+
+        Ok(result)
+    }
+
+    pub fn add(&self, other: &Tensor) -> anyhow::Result<Tensor> {
+        if self.shape != other.shape {
+            return Err(anyhow::anyhow!("add requires tensors with same shape"));
+        }
+
+        let mut result = self.clone();
+
+        match (&self.data, &other.data, &mut result.data) {
+            (TensorData::F32(a), TensorData::F32(b), TensorData::F32(c)) => {
+                for i in 0..a.len() {
+                    c[i] = a[i] + b[i];
+                }
+            }
+            _ => return Err(anyhow::anyhow!("add not implemented for these data types")),
+        }
+
+        Ok(result)
+    }
+
+    pub fn arange(start: i64, end: i64) -> Self {
+        let size = (end - start) as usize;
+        Self::new(vec![size], DataType::Int64, Device::CPU)
+    }
+
+    pub fn layer_norm(&self, _weight: &Tensor) -> anyhow::Result<Tensor> {
+        // Placeholder implementation
+        Ok(self.clone())
+    }
+
+    pub fn gelu(&self) -> anyhow::Result<Tensor> {
+        // Placeholder implementation
+        Ok(self.clone())
+    }
+
+    pub fn tanh(&self) -> anyhow::Result<Tensor> {
+        // Placeholder implementation
+        Ok(self.clone())
     }
 }
 
@@ -127,6 +270,116 @@ pub struct MemoryRequirements {
     pub kv_cache_bytes: usize,
     pub peak_memory_bytes: usize,
     pub fragmentation_overhead: f32,
+}
+
+/// Model inputs for forward pass
+#[derive(Debug, Clone)]
+pub enum ModelInputs {
+    Text {
+        input_ids: Tensor,
+        attention_mask: Option<Tensor>,
+        position_ids: Option<Tensor>,
+    },
+    Image {
+        image_tensor: Tensor,
+        image_features: Option<Tensor>,
+    },
+    Multimodal {
+        input_ids: Tensor,
+        attention_mask: Option<Tensor>,
+        image_tensor: Option<Tensor>,
+        token_type_ids: Option<Tensor>,
+    },
+    Audio {
+        input_features: Tensor,
+        decoder_input_ids: Option<Tensor>,
+    },
+}
+
+impl ModelInputs {
+    pub fn text(text: &str) -> Self {
+        // Placeholder - needs tokenization
+        let input_ids = Tensor::zeros(&[1, text.len()]);
+        Self::Text {
+            input_ids,
+            attention_mask: None,
+            position_ids: None,
+        }
+    }
+
+    pub fn image(image_tensor: Tensor) -> Self {
+        Self::Image {
+            image_tensor,
+            image_features: None,
+        }
+    }
+}
+
+/// Model outputs from forward pass
+#[derive(Debug, Clone)]
+pub enum ModelOutputs {
+    Logits(Tensor),
+    Embeddings(Tensor),
+    ClassificationLogits(Tensor),
+    SequenceClassifierOutput {
+        logits: Tensor,
+        hidden_states: Option<Vec<Tensor>>,
+    },
+    CausalLMOutput {
+        logits: Tensor,
+        past_key_values: Option<Vec<Tensor>>,
+        hidden_states: Option<Vec<Tensor>>,
+        attentions: Option<Vec<Tensor>>,
+    },
+    Seq2SeqLMOutput {
+        logits: Tensor,
+        encoder_last_hidden_state: Tensor,
+        past_key_values: Option<Vec<Tensor>>,
+    },
+}
+
+impl ModelOutputs {
+    pub fn text(&self) -> Option<String> {
+        // Convert logits to text - placeholder implementation
+        match self {
+            ModelOutputs::Logits(_) => Some("Generated text".to_string()),
+            ModelOutputs::CausalLMOutput { .. } => Some("Causal LM output".to_string()),
+            _ => None,
+        }
+    }
+
+    pub fn logits(&self) -> Option<&Tensor> {
+        match self {
+            ModelOutputs::Logits(tensor) => Some(tensor),
+            ModelOutputs::ClassificationLogits(tensor) => Some(tensor),
+            ModelOutputs::CausalLMOutput { logits, .. } => Some(logits),
+            ModelOutputs::Seq2SeqLMOutput { logits, .. } => Some(logits),
+            ModelOutputs::SequenceClassifierOutput { logits, .. } => Some(logits),
+            _ => None,
+        }
+    }
+}
+
+/// Container for loaded model weights
+#[derive(Debug, Clone)]
+pub struct ModelWeights {
+    /// Tensor data indexed by layer name
+    pub tensors: HashMap<String, Tensor>,
+    /// Metadata about the weights
+    pub metadata: WeightMetadata,
+}
+
+/// Metadata about loaded weights
+#[derive(Debug, Clone)]
+pub struct WeightMetadata {
+    /// Total size in bytes
+    pub total_size: usize,
+    /// Number of parameters
+    pub num_parameters: u64,
+    /// Weight format
+    pub format: String,
+    /// Precision info
+    pub dtype: DataType,
 }
 
 /// Model output structure
@@ -196,6 +449,49 @@ impl std::error::Error for ModelError {}
 /// Result type for model operations
 pub type ModelResult<T> = Result<T, ModelError>;
 
+/// Model format types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelFormat {
+    SafeTensors,
+    GGUF,
+    PyTorch,
+    HuggingFace,
+}
+
+/// Model precision types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelPrecision {
+    Float32,
+    Float16,
+    BFloat16,
+    Int8,
+    Int4,
+}
+
+impl fmt::Display for ModelPrecision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ModelPrecision::Float32 => write!(f, "fp32"),
+            ModelPrecision::Float16 => write!(f, "fp16"),
+            ModelPrecision::BFloat16 => write!(f, "bf16"),
+            ModelPrecision::Int8 => write!(f, "int8"),
+            ModelPrecision::Int4 => write!(f, "int4"),
+        }
+    }
+}
+
+/// Model weight metadata
+#[derive(Debug, Clone)]
+pub struct ModelWeightMetadata {
+    pub num_parameters: u64,
+    pub precision: ModelPrecision,
+    pub total_size_bytes: u64,
+    pub shard_count: usize,
+    pub architecture: String,
+    pub model_type: String,
+}
+
+
 /// Normalization types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NormalizationType {
@@ -252,6 +548,38 @@ pub fn calculate_strides(shape: &[usize]) -> Vec<usize> {
         strides[i] = strides[i + 1] * shape[i + 1];
     }
     strides
+}
+
+/// Supported weight file formats for model loading
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum WeightFormat {
+    /// SafeTensors format (recommended)
+    SafeTensors,
+    /// PyTorch pickle format
+    PyTorch,
+    /// GGUF quantized format
+    GGUF,
+    /// Sharded format (contains base format)
+    Sharded(Box<WeightFormat>),
+}
+
+impl WeightFormat {
+    pub fn from_path(path: &std::path::Path) -> Option<Self> {
+        let extension = path.extension()?.to_str()?;
+        match extension {
+            "safetensors" => Some(Self::SafeTensors),
+            "bin" | "pt" => Some(Self::PyTorch),
+            "gguf" => Some(Self::GGUF),
+            _ => None,
+        }
+    }
+
+    pub fn as_ref(&self) -> &WeightFormat {
+        match self {
+            Self::Sharded(base) => base.as_ref(),
+            other => other,
+        }
+    }
 }
 
 #[cfg(test)]

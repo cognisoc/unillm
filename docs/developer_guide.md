@@ -1,822 +1,497 @@
-# 🛠️ UniLLM Developer Guide
+# UniLLM Developer Guide
 
-This comprehensive guide covers everything developers need to know to work with, extend, and contribute to UniLLM.
+Welcome to UniLLM development! This guide will help you understand the architecture, contribute effectively, and extend the system.
 
-## 📋 Table of Contents
+## Architecture Overview
 
-1. [Development Environment Setup](#development-environment-setup)
-2. [Architecture Overview](#architecture-overview)
-3. [Building and Testing](#building-and-testing)
-4. [API Reference](#api-reference)
-5. [Extending UniLLM](#extending-unillm)
-6. [Unikernel Development](#unikernel-development)
-7. [Performance Optimization](#performance-optimization)
-8. [Contributing Guidelines](#contributing-guidelines)
+UniLLM is built on three core abstraction layers that provide clean separation of concerns:
 
-## 🔧 Development Environment Setup
+### 1. TensorCore (`tensor_core.rs`)
+**Unified tensor operations and device management**
 
-### Prerequisites
+```rust
+// Device-agnostic tensor operations
+let tensor = ops_fn::zeros(&[2, 3], DataType::Float32, &Device::CPU)?;
+let result = ops_fn::matmul(&tensor_a, &tensor_b)?;
 
-**Required Tools:**
-```bash
-# Rust toolchain (latest stable)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-
-# Build essentials
-sudo apt-get update
-sudo apt-get install build-essential cmake ninja-build pkg-config libssl-dev
-
-# Docker (for container builds)
-curl -fsSL https://get.docker.com -o get-docker.sh
-sh get-docker.sh
-
-# Python 3.8+ (for build system)
-sudo apt-get install python3 python3-pip
+// Automatic device management
+tensor.to_device(&Device::CUDA(0))?;
 ```
 
-**GPU Development Libraries:**
+**Key Components:**
+- `Tensor` - Universal tensor type with device abstraction
+- `Device` - CPU, CUDA, Metal backend enumeration
+- `TensorOps` - Trait defining all tensor operations
+- `ops_fn` - Functional interface to tensor operations
 
-For NVIDIA GPUs:
-```bash
-# CUDA Toolkit (12.8 recommended)
-wget https://developer.download.nvidia.com/compute/cuda/12.8.0/local_installers/cuda_12.8.0_550.54.15_linux.run
-sudo sh cuda_12.8.0_550.54.15_linux.run
+### 2. ModelCore (`model_core.rs`)
+**Clean model interfaces and configuration**
 
-# Set environment variables
-export CUDA_HOME=/usr/local/cuda
-export PATH=$CUDA_HOME/bin:$PATH
-export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+```rust
+// Universal Model trait
+pub trait Model: Send + Sync {
+    type Config: ModelConfig;
+
+    fn forward(&self, inputs: &ModelInputs) -> Result<ModelOutputs>;
+    fn generate(&self, prompt: &str, config: &GenerationConfig) -> Result<String>;
+    // ... other methods
+}
+
+// Configuration macro with automatic trait implementation
+model_config!(LlamaConfig {
+    vocab_size: usize = 32000,
+    hidden_size: usize = 4096,
+    num_hidden_layers: usize = 32,
+});
 ```
 
-For AMD GPUs:
-```bash
-# ROCm (6.5 recommended)
-curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.5 jammy main" | sudo tee /etc/apt/sources.list.d/rocm.list
-sudo apt update
-sudo apt install rocm-dev hip-dev
+**Key Components:**
+- `Model` trait - Universal interface for all models
+- `ModelConfig` trait - Consistent configuration system
+- `ModelInputs`/`ModelOutputs` - Unified I/O types
+- `model_config!` macro - Automatic trait implementations
+
+### 3. WeightLoaderCore (`weight_loader_core.rs`)
+**Format-agnostic weight loading and management**
+
+```rust
+// Load weights from any format
+let weights = WeightLoader::from_safetensors("model.safetensors")?;
+let model = LlamaModelV2::from_weights(config, weights)?;
+
+// Automatic format detection
+let weights = WeightLoader::auto_detect("model_file")?;
 ```
 
-### Project Setup
+## Adding New Models
+
+Thanks to the solid abstractions, adding new models is straightforward:
+
+### Step 1: Define Configuration
+
+```rust
+// In models_v2/your_model.rs
+use crate::model_config;
+use super::traits::*;
+
+model_config!(YourModelConfig {
+    vocab_size: usize = 50000,
+    hidden_size: usize = 1024,
+    num_hidden_layers: usize = 24,
+    num_attention_heads: usize = 16,
+    // ... model-specific fields
+});
+```
+
+### Step 2: Implement Model Structure
+
+```rust
+pub struct YourModelV2 {
+    config: YourModelConfig,
+    device: Device,
+    embed_tokens: Tensor,
+    layers: Vec<YourModelLayer>,
+    norm: Tensor,
+    lm_head: Tensor,
+}
+
+pub struct YourModelLayer {
+    self_attn: YourAttention,
+    mlp: YourMLP,
+    input_layernorm: Tensor,
+    post_attention_layernorm: Tensor,
+}
+```
+
+### Step 3: Implement Model Trait
+
+```rust
+impl Model for YourModelV2 {
+    type Config = YourModelConfig;
+
+    fn new(config: YourModelConfig) -> Result<Self> {
+        // Initialize model with zero tensors
+        let device = Device::CPU;
+        // ... create layers
+        Ok(Self { config, device, /* ... */ })
+    }
+
+    fn from_weights(config: YourModelConfig, weights: ModelWeights) -> Result<Self> {
+        let mut model = Self::new(config)?;
+        // Load weights into model
+        if let Some(w) = weights.get("embed_tokens.weight") {
+            model.embed_tokens = w.clone();
+        }
+        // ... load other weights
+        Ok(model)
+    }
+
+    fn forward(&self, inputs: &ModelInputs) -> Result<ModelOutputs> {
+        let input_ids = match inputs {
+            ModelInputs::Text { input_ids, .. } => input_ids,
+            _ => return Err(anyhow::anyhow!("Expected text input")),
+        };
+
+        // Forward pass implementation
+        let mut hidden_states = ops_fn::embedding(input_ids, &self.embed_tokens)?;
+
+        for layer in &self.layers {
+            hidden_states = layer.forward(&hidden_states)?;
+        }
+
+        let logits = ops_fn::matmul(&hidden_states, &self.lm_head)?;
+
+        Ok(ModelOutputs::Logits { logits, hidden_states: Some(hidden_states) })
+    }
+
+    fn generate(&self, prompt: &str, config: &GenerationConfig) -> Result<String> {
+        // Basic generation (can be made more sophisticated)
+        Ok(format!("Generated from: {}", prompt))
+    }
+
+    fn config(&self) -> &Self::Config { &self.config }
+
+    fn memory_requirements(&self) -> MemoryRequirements {
+        let param_size = self.config.vocab_size * self.config.hidden_size * 4;
+        MemoryRequirements {
+            gpu_memory: param_size,
+            cpu_memory: param_size / 4,
+            kv_cache_memory: self.config.hidden_size * 1000 * 4, // rough estimate
+            peak_memory: param_size * 2,
+        }
+    }
+
+    fn to_device(&mut self, device: &Device) -> Result<()> {
+        self.device = device.clone();
+        self.embed_tokens = self.embed_tokens.to_device(device)?;
+        // ... move other tensors
+        Ok(())
+    }
+}
+```
+
+### Step 4: Export Model
+
+```rust
+// In models_v2/mod.rs
+pub mod your_model;
+pub use your_model::YourModelV2;
+```
+
+## Development Workflow
+
+### Setting Up Environment
 
 ```bash
-# Clone the repository
-git clone https://github.com/unillm/unillm.git
+# Clone and build
+git clone https://github.com/your-org/unillm.git
 cd unillm
 
-# Install dependencies
-make install-deps
-
-# Verify setup
-make check-deps
-
-# Build for development
-cargo build --features cuda,hip
+# Verify everything compiles
+cargo check
 
 # Run tests
-make test
+cargo test
 ```
 
-### Development Tools Setup
+### Project Structure
 
-**VS Code Configuration (.vscode/settings.json):**
-```json
-{
-    "rust-analyzer.cargo.features": ["cuda", "hip", "unikernel"],
-    "rust-analyzer.checkOnSave.command": "clippy",
-    "rust-analyzer.checkOnSave.extraArgs": ["--", "-D", "warnings"],
-    "files.associations": {
-        "*.hbs": "handlebars"
-    }
-}
+```
+crates/runtime/src/
+├── lib.rs                    # Module exports and runtime
+├── tensor_core.rs            # Tensor operations
+├── model_core.rs             # Model abstractions
+├── weight_loader_core.rs     # 💾 Weight loading
+├── models_v2/                # 📁 All model implementations
+│   ├── mod.rs               # Model exports
+│   ├── llama.rs            # Llama family
+│   ├── qwen.rs             # Qwen family
+│   ├── gemma.rs            # Gemma family
+│   └── ...                 # 15+ other families
+├── inference.rs              # Inference pipeline
+├── tokenizer.rs              # Tokenization
+├── sampler.rs                # 🎲 Sampling methods
+└── bin/                      # 🔨 Example binaries
 ```
 
-**Git Hooks Setup:**
+### Testing Your Changes
+
 ```bash
-# Install pre-commit hooks
-cp scripts/pre-commit .git/hooks/
-chmod +x .git/hooks/pre-commit
+# Test specific components
+cargo test -p runtime tensor_core
+cargo test -p runtime model_core
+cargo test -p runtime models_v2::your_model
+
+# Integration tests
+cargo test -p runtime inference
+
+# Full workspace test
+cargo test
 ```
 
-## 🏗️ Architecture Overview
+### Common Development Tasks
 
-### Core Components
+#### Adding New Tensor Operations
 
-```
-UniLLM/
-├── crates/
-│   ├── kv/                     # Hybrid KV Cache System
-│   │   ├── hybrid_cache.rs     # L1 Radix + L2 Paged + L3 Compressed
-│   │   ├── radix_cache.rs      # SGLang-inspired prefix sharing
-│   │   └── paged_allocator.rs  # vLLM-inspired block allocation
-│   │
-│   ├── scheduler/              # Intelligent Scheduling
-│   │   ├── intelligent_scheduler.rs  # Cache-aware scheduling
-│   │   ├── stream_overlap.rs         # Concurrent stream processing
-│   │   └── gpu_memory_tracker.rs     # Memory optimization
-│   │
-│   ├── kernels/                # GPU Kernel Framework
-│   │   ├── template_engine.rs   # Template-based kernel generation
-│   │   ├── cuda_driver.rs       # Direct CUDA driver interface
-│   │   ├── hip_driver.rs        # Direct HIP driver interface
-│   │   └── unikernel_gpu.rs     # Unikernel GPU abstraction
-│   │
-│   └── inference/              # Unified Inference Engine
-│       ├── engine.rs           # Main inference coordinator
-│       ├── batch_processor.rs  # Request batching
-│       └── stream_processor.rs # Streaming responses
-│
-└── src/                        # Main Applications
-    ├── server.rs               # HTTP inference server
-    ├── client.rs               # Command-line client
-    └── benchmark.rs            # Performance benchmarking
-```
-
-### Key Design Principles
-
-1. **Modularity**: Each crate has a single responsibility and clean interfaces
-2. **Performance**: Zero-cost abstractions and direct hardware access
-3. **Safety**: Rust's memory safety without performance overhead
-4. **Flexibility**: Support for multiple GPU vendors and deployment modes
-5. **Extensibility**: Plugin architecture for new algorithms and hardware
-
-## 🔨 Building and Testing
-
-### Build Configurations
-
-**Development Build:**
-```bash
-# Fast compilation for development
-cargo build --features cuda
-
-# With debug info
-cargo build --profile release-with-debug --features cuda,hip
-```
-
-**Production Build:**
-```bash
-# Optimized release build
-cargo build --release --features cuda,hip
-
-# GPU-optimized build
-cargo build --profile gpu-optimized --features cuda,hip
-```
-
-**Feature Flags:**
-```bash
-# GPU vendor support
---features cuda              # NVIDIA CUDA support
---features hip               # AMD ROCm/HIP support
---features cuda,hip          # Multi-vendor support
-
-# Unikernel support
---features unikernel         # Base unikernel support
---features nanos             # Nanos unikernel
---features unikraft          # Unikraft unikernel
-
-# Additional features
---features benchmarking      # Include benchmark suite
---features debug-optimizations  # Debug-friendly optimizations
-```
-
-### Testing
-
-**Unit Tests:**
-```bash
-# Run all tests
-cargo test --workspace
-
-# GPU-specific tests (requires GPU)
-cargo test --features cuda test_cuda
-cargo test --features hip test_hip
-
-# Specific module tests
-cargo test -p kv
-cargo test -p scheduler
-```
-
-**Integration Tests:**
-```bash
-# Full system tests
-make test
-
-# Performance tests
-make benchmark
-
-# Memory leak tests
-cargo test --features cuda -- --test-threads=1 --nocapture test_memory_leak
-```
-
-**Continuous Integration:**
-```bash
-# CI test suite
-make ci-test
-
-# Build all variants
-make ci-build
-```
-
-## 📡 API Reference
-
-### REST API Endpoints
-
-#### Health Check
-```http
-GET /health
-```
-
-**Response:**
-```json
-{
-  "status": "healthy",
-  "version": "0.1.0",
-  "gpu_target": "cuda",
-  "runtime_mode": "container",
-  "memory_usage_mb": 1024.5,
-  "gpu_memory_usage_mb": 2048.0
-}
-```
-
-#### Text Generation
-```http
-POST /v1/generate
-Content-Type: application/json
-
-{
-  "prompt": "The future of AI is",
-  "max_tokens": 100,
-  "temperature": 0.7,
-  "top_p": 0.9
-}
-```
-
-**Response:**
-```json
-{
-  "generated_text": "The future of AI is bright and full of possibilities...",
-  "tokens_generated": 87,
-  "inference_time_ms": 245,
-  "cache_hits": 15,
-  "gpu_utilization": 0.85
-}
-```
-
-#### Statistics
-```http
-GET /stats
-```
-
-**Response:**
-```json
-{
-  "total_requests": 1500,
-  "total_tokens_generated": 150000,
-  "average_latency_ms": 230.5,
-  "cache_hit_rate": 0.75,
-  "gpu_utilization": 0.82,
-  "memory_stats": {
-    "total_memory_mb": 16384.0,
-    "used_memory_mb": 8192.0,
-    "cache_memory_mb": 2048.0,
-    "gpu_memory_mb": 12288.0
-  }
-}
-```
-
-### Rust API
-
-#### Basic Inference
 ```rust
-use unillm::{UniLLMInferenceEngine, InferenceRequest, InferenceResult};
+// In tensor_core.rs TensorOps trait
+fn your_operation(&self, input: &Tensor, params: &[f32]) -> Result<Tensor>;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize the inference engine
-    let engine = UniLLMInferenceEngine::new_with_defaults().await?;
+// In CpuTensorOpsImpl
+fn your_operation(&self, input: &Tensor, params: &[f32]) -> Result<Tensor> {
+    // CPU implementation
+    // Return new Tensor with computed values
+}
 
-    // Create a request
-    let request = InferenceRequest {
-        prompt_tokens: "Hello, how are you?".split_whitespace().count(),
-        max_output_length: 50,
-        temperature: 0.7,
-        top_p: 0.9,
-        stop_sequences: vec![],
-        stream: false,
-    };
-
-    // Process the request
-    let result = engine.process_request(request).await?;
-
-    println!("Generated: {}", result.generated_text);
-    println!("Tokens: {}", result.tokens_generated);
-    println!("Time: {}ms", result.inference_time_ms);
-
-    Ok(())
+// In ops_fn module
+pub fn your_operation(input: &Tensor, params: &[f32]) -> Result<Tensor> {
+    input.ops().your_operation(input, params)
 }
 ```
 
-#### Custom GPU Configuration
+#### Adding New Configuration Fields
+
 ```rust
-use unillm::kernels::{KernelFramework, HardwareDetector};
+// The model_config! macro automatically handles new fields
+model_config!(YourConfig {
+    existing_field: usize = 1000,
+    new_field: f32 = 0.1,        // Just add new field with default
+    optional_field: Option<String> = None,
+});
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Detect hardware
-    let hardware_info = HardwareDetector::detect_hardware()?;
-    println!("Detected GPU: {:?}", hardware_info.gpu_architecture);
-
-    // Create optimized kernel framework
-    let kernel_framework = KernelFramework::new()?;
-
-    // Get optimization configuration
-    let workload = WorkloadCharacteristics {
-        batch_size: 32,
-        sequence_length: 512,
-        model_size: ModelSize::Large,
-        precision: Precision::FP16,
-    };
-
-    let config = kernel_framework.get_optimized_configuration(&workload)?;
-    println!("Optimization config: {:?}", config);
-
-    Ok(())
-}
+// Automatic trait implementations are regenerated
 ```
 
-#### Unikernel Mode Detection
+#### Implementing Custom Layers
+
 ```rust
-#[cfg(feature = "unikernel")]
-use unillm::kernels::unikernel_gpu::{detect_unikernel_runtime, create_runtime_gpu_interface};
+pub struct YourCustomLayer {
+    weight: Tensor,
+    bias: Option<Tensor>,
+    config: YourModelConfig,
+}
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Detect runtime environment
-    if let Some(runtime) = detect_unikernel_runtime() {
-        println!("Running in unikernel mode: {}", runtime);
-
-        // Create unikernel GPU interface
-        let gpu_interface = create_runtime_gpu_interface().await?;
-        let memory_info = gpu_interface.get_memory_info().await?;
-
-        println!("GPU Memory: {:.1} GB available",
-                memory_info.available_memory as f64 / (1024.0 * 1024.0 * 1024.0));
-    } else {
-        println!("Running in container mode");
+impl YourCustomLayer {
+    fn new(config: &YourModelConfig, device: &Device) -> Result<Self> {
+        let weight = ops_fn::zeros(&[config.hidden_size, config.hidden_size],
+                                   DataType::Float32, device)?;
+        Ok(Self { weight, bias: None, config: config.clone() })
     }
 
-    Ok(())
-}
-```
-
-## 🔍 Extending UniLLM
-
-### Adding New GPU Support
-
-1. **Implement GPU Driver Interface:**
-```rust
-// crates/kernels/src/my_gpu_driver.rs
-use crate::types::{GpuDriverResult, GpuContext, GpuMemoryHandle};
-
-pub struct MyGpuDriverInterface {
-    context: GpuContext,
-    device_id: u32,
-}
-
-impl MyGpuDriverInterface {
-    pub fn new(device_id: u32) -> GpuDriverResult<Self> {
-        // Initialize GPU driver
-        let context = initialize_my_gpu_driver(device_id)?;
-
-        Ok(Self { context, device_id })
-    }
-
-    pub fn allocate_memory(&self, size: usize) -> GpuDriverResult<GpuMemoryHandle> {
-        // Implement memory allocation
-        todo!("Implement memory allocation for your GPU")
-    }
-
-    pub fn launch_kernel(&self, kernel_name: &str, params: &[u8]) -> GpuDriverResult<()> {
-        // Implement kernel launch
-        todo!("Implement kernel launch for your GPU")
-    }
-}
-```
-
-2. **Add Hardware Detection:**
-```rust
-// crates/kernels/src/hardware_detection.rs
-impl HardwareDetector {
-    fn detect_my_gpu() -> Option<GpuArchitecture> {
-        // Check for your GPU hardware
-        if my_gpu_is_present() {
-            Some(GpuArchitecture::MyGpu {
-                device_name: get_my_gpu_name(),
-                compute_capability: get_my_gpu_capability(),
-                memory_gb: get_my_gpu_memory(),
-            })
+    fn forward(&self, input: &Tensor) -> Result<Tensor> {
+        let output = ops_fn::matmul(input, &self.weight)?;
+        if let Some(ref bias) = self.bias {
+            ops_fn::add(&output, bias)
         } else {
-            None
+            Ok(output)
         }
     }
-}
-```
 
-3. **Add Build Configuration:**
-```toml
-# Cargo.toml
-[features]
-my_gpu = ["kernels/my_gpu"]
-
-# crates/kernels/Cargo.toml
-[features]
-my_gpu = ["dep:my_gpu_sdk"]
-
-[dependencies]
-my_gpu_sdk = { version = "1.0", optional = true }
-```
-
-### Custom Cache Policies
-
-```rust
-// crates/kv/src/custom_cache_policy.rs
-use crate::types::{CachePolicy, EvictionStrategy, AccessPattern};
-
-pub struct CustomCachePolicy {
-    // Your custom cache policy state
-}
-
-impl CachePolicy for CustomCachePolicy {
-    fn should_cache(&self, pattern: &AccessPattern) -> bool {
-        // Implement your caching logic
-        pattern.frequency > 0.5 && pattern.recency < Duration::from_secs(300)
-    }
-
-    fn get_eviction_candidate(&self, blocks: &[CacheBlock]) -> Option<BlockId> {
-        // Implement your eviction strategy
-        blocks.iter()
-              .min_by_key(|block| block.last_access)
-              .map(|block| block.id)
-    }
-}
-```
-
-### Custom Schedulers
-
-```rust
-// crates/scheduler/src/custom_scheduler.rs
-use crate::types::{Request, BatchSchedulingDecision, SchedulingPolicy};
-
-pub struct CustomScheduler {
-    // Your scheduler state
-}
-
-impl SchedulingPolicy for CustomScheduler {
-    async fn schedule_batch(&mut self, requests: &[Request]) -> BatchSchedulingDecision {
-        // Implement your scheduling algorithm
-        let mut selected = Vec::new();
-        let mut total_memory = 0;
-
-        for request in requests {
-            let memory_required = estimate_memory_requirement(request);
-            if total_memory + memory_required <= self.memory_limit {
-                selected.push(request.clone());
-                total_memory += memory_required;
-            }
+    fn load_weights(&mut self, weights: &ModelWeights, prefix: &str) -> Result<()> {
+        if let Some(w) = weights.get(&format!("{}.weight", prefix)) {
+            self.weight = w.clone();
         }
-
-        BatchSchedulingDecision {
-            selected_requests: selected,
-            memory_allocation: total_memory,
-            estimated_latency: self.estimate_latency(&selected),
+        if let Some(w) = weights.get(&format!("{}.bias", prefix)) {
+            self.bias = Some(w.clone());
         }
+        Ok(())
     }
-}
-```
 
-## 🔥 Unikernel Development
-
-### Building Unikernel Support
-
-1. **Add Unikernel Feature Flag:**
-```rust
-#[cfg(feature = "unikernel")]
-mod unikernel_specific_code {
-    // Code that only runs in unikernel mode
-}
-
-#[cfg(not(feature = "unikernel"))]
-mod container_specific_code {
-    // Code that only runs in container mode
-}
-```
-
-2. **Runtime Detection:**
-```rust
-pub fn detect_runtime_environment() -> RuntimeEnvironment {
-    if std::env::var("UNILLM_UNIKERNEL_MODE").is_ok() {
-        RuntimeEnvironment::Unikernel
-    } else if std::path::Path::new("/.dockerenv").exists() {
-        RuntimeEnvironment::Container
-    } else {
-        RuntimeEnvironment::Bare
-    }
-}
-```
-
-3. **Memory Management:**
-```rust
-#[cfg(feature = "unikernel")]
-fn allocate_gpu_memory(size: usize) -> Result<*mut u8, AllocationError> {
-    // Direct physical memory allocation in unikernel
-    unsafe {
-        let ptr = nanos_gpu_alloc(size);
-        if ptr.is_null() {
-            Err(AllocationError::OutOfMemory)
-        } else {
-            Ok(ptr)
+    fn to_device(&mut self, device: &Device) -> Result<()> {
+        self.weight = self.weight.to_device(device)?;
+        if let Some(ref mut bias) = self.bias {
+            *bias = bias.to_device(device)?;
         }
+        Ok(())
     }
-}
-
-#[cfg(not(feature = "unikernel"))]
-fn allocate_gpu_memory(size: usize) -> Result<*mut u8, AllocationError> {
-    // Standard GPU memory allocation
-    cuda_malloc(size)
 }
 ```
 
-### Nanos Unikernel Integration
+## Testing Patterns
+
+### Unit Testing Models
 
 ```rust
-// Platform-specific code for Nanos
-#[cfg(feature = "nanos")]
-mod nanos_integration {
+#[cfg(test)]
+mod tests {
     use super::*;
 
-    pub fn initialize_nanos_gpu() -> Result<NanosGpuContext, Error> {
-        // Load GPU klib
-        let klib_name = std::env::var("NANOS_GPU_KLIB")
-            .unwrap_or_else(|_| "nvidia-535.54.03".to_string());
-
-        // Initialize Nanos GPU interface
-        let context = unsafe {
-            nanos_gpu_init(&klib_name)?
-        };
-
-        Ok(NanosGpuContext { context })
+    #[test]
+    fn test_model_creation() {
+        let config = YourModelConfig::default();
+        let model = YourModelV2::new(config).unwrap();
+        assert_eq!(model.config().vocab_size, 50000);
     }
 
-    pub fn nanos_gpu_launch_kernel(
-        context: &NanosGpuContext,
-        kernel: &str,
-        params: &[u8]
-    ) -> Result<(), Error> {
-        unsafe {
-            nanos_gpu_kernel_launch(context.context, kernel.as_ptr(), params.as_ptr(), params.len())
+    #[test]
+    fn test_forward_pass() {
+        let config = YourModelConfig { hidden_size: 64, ..Default::default() };
+        let model = YourModelV2::new(config).unwrap();
+
+        let input_tensor = ops_fn::zeros(&[1, 10], DataType::Int64, &Device::CPU).unwrap();
+        let inputs = ModelInputs::Text {
+            input_ids: input_tensor,
+            attention_mask: None,
+            position_ids: None
+        };
+
+        let outputs = model.forward(&inputs).unwrap();
+        match outputs {
+            ModelOutputs::Logits { logits, .. } => {
+                assert_eq!(logits.shape(), &[1, 10, config.vocab_size]);
+            },
+            _ => panic!("Expected logits output"),
         }
     }
 }
 ```
 
-## ⚡ Performance Optimization
-
-### Profiling and Benchmarking
+### Integration Testing
 
 ```rust
-// Enable detailed profiling
-use unillm::profiling::{ProfileScope, ProfileData};
+#[test]
+fn test_end_to_end_generation() {
+    let config = YourModelConfig::default();
+    let model = YourModelV2::new(config).unwrap();
+    let gen_config = GenerationConfig::default();
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Enable profiling
-    let _profile_scope = ProfileScope::new("inference_pipeline");
+    let output = model.generate("Hello world", &gen_config).unwrap();
+    assert!(!output.is_empty());
+}
+```
 
-    let engine = UniLLMInferenceEngine::new_with_defaults().await?;
+## Performance Guidelines
 
-    // Run benchmark
-    let mut total_time = Duration::ZERO;
-    let num_requests = 100;
+### Memory Management
 
-    for i in 0..num_requests {
-        let start = Instant::now();
+```rust
+// Good: Reuse tensors when possible
+fn efficient_computation(input: &Tensor) -> Result<Tensor> {
+    let mut result = input.clone();
+    ops_fn::relu_inplace(&mut result)?;  // In-place when possible
+    Ok(result)
+}
 
-        let request = InferenceRequest {
-            prompt_tokens: 50,
-            max_output_length: 50,
-            temperature: 0.7,
-            top_p: 0.9,
-            stop_sequences: vec![],
-            stream: false,
-        };
+// Avoid: Creating unnecessary intermediate tensors
+fn inefficient_computation(input: &Tensor) -> Result<Tensor> {
+    let temp1 = ops_fn::relu(input)?;
+    let temp2 = ops_fn::relu(&temp1)?;  // temp1 now unused
+    ops_fn::relu(&temp2)
+}
+```
 
-        let _result = engine.process_request(request).await?;
+### Device Management
 
-        total_time += start.elapsed();
+```rust
+// Good: Check device compatibility
+fn smart_operation(a: &Tensor, b: &Tensor) -> Result<Tensor> {
+    if a.device() != b.device() {
+        let b = b.to_device(a.device())?;
+        ops_fn::matmul(a, &b)
+    } else {
+        ops_fn::matmul(a, b)
+    }
+}
+```
 
-        if i % 10 == 0 {
-            println!("Completed {} requests", i);
-        }
+## 🐛 Common Issues and Solutions
+
+### Compilation Errors
+
+**Issue**: Model doesn't implement required traits
+```rust
+error[E0277]: `YourModelV2` doesn't implement `Model`
+```
+**Solution**: Make sure you implement all Model trait methods
+
+**Issue**: Configuration macro errors
+```rust
+error: no field `hidden_size` on type `&YourModelConfig`
+```
+**Solution**: The `model_config!` macro looks for `hidden_size` or `d_model` fields. Make sure one exists.
+
+### Runtime Errors
+
+**Issue**: Tensor shape mismatches
+```rust
+thread 'main' panicked at 'assertion failed: shapes compatible'
+```
+**Solution**: Check tensor shapes before operations:
+
+```rust
+fn safe_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
+    let a_shape = a.shape();
+    let b_shape = b.shape();
+
+    if a_shape.len() != 2 || b_shape.len() != 2 {
+        return Err(anyhow::anyhow!("Expected 2D tensors"));
     }
 
-    println!("Average latency: {:.2}ms",
-             total_time.as_millis() as f64 / num_requests as f64);
+    if a_shape[1] != b_shape[0] {
+        return Err(anyhow::anyhow!(
+            "Incompatible shapes: {:?} x {:?}", a_shape, b_shape
+        ));
+    }
 
-    // Get detailed profile data
-    let profile_data = ProfileData::get_current();
-    println!("Profile data: {:#?}", profile_data);
+    ops_fn::matmul(a, b)
+}
+```
 
+## Best Practices
+
+### 1. Follow the Abstraction Layers
+- Use `ops_fn` for tensor operations (don't call TensorOps directly)
+- Use the `Model` trait for all model implementations
+- Use `model_config!` for configuration structs
+
+### 2. Error Handling
+```rust
+// Good: Descriptive errors with context
+fn load_layer(&mut self, weights: &ModelWeights, layer_idx: usize) -> Result<()> {
+    let prefix = format!("model.layers.{}", layer_idx);
+    if let Some(w) = weights.get(&format!("{}.weight", prefix)) {
+        self.weight = w.clone();
+    } else {
+        return Err(anyhow::anyhow!("Missing weight: {}.weight", prefix));
+    }
     Ok(())
 }
 ```
 
-### Memory Optimization
-
+### 3. Configuration Patterns
 ```rust
-// Tune cache sizes based on available memory
-use unillm::memory::{MemoryManager, CacheConfiguration};
-
-fn optimize_cache_configuration() -> CacheConfiguration {
-    let total_memory = MemoryManager::get_total_memory();
-    let gpu_memory = MemoryManager::get_gpu_memory();
-
-    // Use 25% of GPU memory for L1 cache
-    let l1_size = (gpu_memory as f64 * 0.25) as usize;
-
-    // Use 50% of GPU memory for L2 cache
-    let l2_size = (gpu_memory as f64 * 0.50) as usize;
-
-    // Use system memory for L3 cache
-    let l3_size = (total_memory as f64 * 0.10) as usize;
-
-    CacheConfiguration {
-        l1_radix_size: l1_size,
-        l2_paged_size: l2_size,
-        l3_compressed_size: l3_size,
-        compression_ratio: 0.6,
-        eviction_policy: EvictionPolicy::LeastRecentlyUsed,
-    }
-}
+// Good: Provide sensible defaults
+model_config!(ModelConfig {
+    vocab_size: usize = 32000,
+    hidden_size: usize = 4096,
+    intermediate_size: usize = 11008,  // derived: hidden_size * 8/3
+    rope_theta: f32 = 10000.0,
+    layer_norm_epsilon: f32 = 1e-6,
+    // Optional fields
+    rope_scaling: Option<String> = None,
+});
 ```
 
-### GPU Kernel Optimization
+### 4. Testing
+- Test model creation with different configurations
+- Test forward pass with various input shapes
+- Test weight loading and device transfer
+- Include performance tests for critical paths
 
-```rust
-// Template-based kernel optimization
-use unillm::kernels::{KernelTemplate, OptimizationHints};
+## 🤝 Contributing
 
-fn generate_optimized_kernel(gpu_arch: &GpuArchitecture) -> String {
-    let template = KernelTemplate::new("attention_kernel.hbs");
+1. **Pick an area**: Models, tensor ops, inference, or infrastructure
+2. **Start small**: Begin with tests or small improvements
+3. **Follow patterns**: Look at existing implementations
+4. **Document**: Add clear comments and update docs
+5. **Test thoroughly**: Include unit and integration tests
 
-    let optimization_hints = match gpu_arch {
-        GpuArchitecture::Nvidia { compute_capability, .. } => {
-            OptimizationHints {
-                use_tensor_cores: compute_capability >= &(7, 0),
-                block_size: if compute_capability >= &(8, 0) { 256 } else { 128 },
-                shared_memory_size: 48 * 1024, // 48KB
-                register_usage: RegisterUsage::High,
-            }
-        },
-        GpuArchitecture::Amd { .. } => {
-            OptimizationHints {
-                use_tensor_cores: false,
-                block_size: 64,
-                shared_memory_size: 32 * 1024, // 32KB
-                register_usage: RegisterUsage::Medium,
-            }
-        },
-    };
+## 📚 Additional Resources
 
-    template.render(&optimization_hints)
-}
-```
-
-## 🤝 Contributing Guidelines
-
-### Code Style
-
-1. **Rust Style:**
-   - Follow [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
-   - Use `rustfmt` for formatting: `cargo fmt`
-   - Use `clippy` for linting: `cargo clippy -- -D warnings`
-
-2. **Commit Messages:**
-   ```
-   feat: add support for Intel XPU
-   fix: resolve memory leak in cache eviction
-   docs: update API reference for v2 endpoints
-   perf: optimize CUDA kernel launch overhead
-   test: add integration tests for unikernel mode
-   ```
-
-3. **Documentation:**
-   - All public APIs must have documentation
-   - Include examples in doc comments
-   - Update relevant documentation files
-
-### Testing Requirements
-
-1. **Unit Tests:**
-   ```rust
-   #[cfg(test)]
-   mod tests {
-       use super::*;
-
-       #[test]
-       fn test_cache_allocation() {
-           // Test implementation
-       }
-
-       #[tokio::test]
-       async fn test_async_inference() {
-           // Async test implementation
-       }
-   }
-   ```
-
-2. **Integration Tests:**
-   ```bash
-   # tests/integration_test.rs
-   # Full system integration tests
-   ```
-
-3. **Benchmark Tests:**
-   ```rust
-   #[cfg(feature = "benchmarking")]
-   mod benches {
-       use criterion::{black_box, criterion_group, criterion_main, Criterion};
-
-       fn benchmark_inference(c: &mut Criterion) {
-           c.bench_function("inference_latency", |b| {
-               b.iter(|| {
-                   // Benchmark implementation
-               })
-           });
-       }
-
-       criterion_group!(benches, benchmark_inference);
-       criterion_main!(benches);
-   }
-   ```
-
-### Pull Request Process
-
-1. **Before Submitting:**
-   ```bash
-   # Run full test suite
-   make ci-test
-
-   # Check formatting
-   cargo fmt --check
-
-   # Run clippy
-   cargo clippy --all-targets --all-features -- -D warnings
-
-   # Update documentation
-   cargo doc --no-deps --all-features
-   ```
-
-2. **PR Template:**
-   - Clear description of changes
-   - Link to related issues
-   - Test results and performance impact
-   - Documentation updates
-   - Breaking changes noted
-
-3. **Review Process:**
-   - Code review from maintainers
-   - CI pipeline must pass
-   - Performance benchmarks if applicable
-   - Documentation review
-
-### Development Workflow
-
-```bash
-# 1. Set up feature branch
-git checkout -b feature/my-new-feature
-
-# 2. Make changes with tests
-# ... edit code ...
-
-# 3. Test locally
-make test
-make benchmark
-
-# 4. Commit changes
-git add .
-git commit -m "feat: add my new feature"
-
-# 5. Push and create PR
-git push origin feature/my-new-feature
-# Create PR on GitHub
-
-# 6. Address review feedback
-# ... make changes ...
-git add .
-git commit -m "fix: address review feedback"
-git push origin feature/my-new-feature
-```
+- [Rust Book](https://doc.rust-lang.org/book/) - Rust fundamentals
+- [API Reference](api_reference.md) - Detailed API docs
+- [Architecture](../ARCHITECTURE.md) - System design deep-dive
 
 ---
 
-This developer guide provides the foundation for working with UniLLM. For specific questions or advanced topics, please refer to the other documentation files or open an issue on GitHub.
+**Happy coding! 🦀** The solid abstractions make UniLLM a pleasure to work with.
