@@ -259,7 +259,7 @@ impl BatchTokenizer {
 
         // Pad sequences and create attention masks
         for tokens in &mut encoded_batch {
-            let original_len = tokens.len();
+            let _original_len = tokens.len();
 
             // Truncate if too long
             if tokens.len() > max_len {

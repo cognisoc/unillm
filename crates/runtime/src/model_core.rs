@@ -4,7 +4,7 @@
 //! model implementations build upon. It defines clean interfaces that
 //! hide implementation complexity.
 
-use crate::tensor_core::{Tensor, Device, DataType};
+use crate::tensor_core::{Tensor, Device};
 use std::collections::HashMap;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};

@@ -6,7 +6,7 @@
 use crate::types::*;
 use crate::models_v2::llama::{LlamaModelV2, LlamaConfig};
 use crate::model_core::{Model, GenerationConfig, ModelInputs, ModelConfig};
-use crate::tokenizer::{Tokenizer, EOS_TOKEN_ID};
+use crate::tokenizer::Tokenizer;
 use crate::tensor_core::{Tensor, Device};
 
 // GenerationConfig is now imported from model_core
@@ -245,7 +245,7 @@ impl InferencePipeline {
     }
 
     /// Extract logits for the last token from the logits tensor
-    fn extract_last_token_logits(&self, logits: &Tensor) -> ModelResult<Vec<f32>> {
+    fn extract_last_token_logits(&self, _logits: &Tensor) -> ModelResult<Vec<f32>> {
         // Simplified implementation - in reality would need proper tensor ops
         // For now, return dummy logits
         let vocab_size = self.model.config().vocab_size();

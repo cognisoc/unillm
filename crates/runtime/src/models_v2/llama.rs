@@ -8,7 +8,7 @@
 
 use crate::model_config;
 use super::traits::*;
-use std::collections::HashMap;
+
 use anyhow::Result;
 use serde::{Serialize, Deserialize};
 
@@ -96,7 +96,7 @@ impl Model for LlamaModelV2 {
             embed_tokens.clone()
         } else {
             ops_fn::zeros(
-                &[config.vocab_size, config.hidden_size],
+                &[config.hidden_size, config.vocab_size],
                 DataType::Float32,
                 &device
             )?
