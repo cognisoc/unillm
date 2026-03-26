@@ -196,17 +196,19 @@ impl RadixCache {
                 // Update access time
                 node.update_access_time();
 
-                // Check if this node has KV data (valid endpoint)
-                if node.kv_data.is_some() && matched_length > best_length {
-                    best_match = Some(current_node_id);
-                    best_length = matched_length;
-                }
-
                 // Try to find child for next token
                 let next_token = tokens[matched_length];
                 if let Some(child_node) = node.children.get(&next_token) {
                     current_node_id = child_node.node_id;
                     matched_length += 1;
+                    
+                    // Check if the child node has KV data (valid endpoint)
+                    if let Some(child_full_node) = self.nodes.get(&current_node_id) {
+                        if child_full_node.kv_data.is_some() {
+                            best_match = Some(current_node_id);
+                            best_length = matched_length;
+                        }
+                    }
                 } else {
                     break;
                 }
