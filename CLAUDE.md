@@ -107,17 +107,46 @@ impl Model for YourModelV2 {
 ## Key Implementation Notes
 
 ### Currently Working
-- Basic tensor operations (CPU only)
-- LLaMA model architecture (skeleton implementation)
+- Tensor operations via Candle backend (CPU)
+- GGUF weight loading with dequantization
+- GGUF tokenizer extraction (vocab, special tokens, byte-level fallback)
+- Ollama registry integration for model downloads
+- LLaMA model with full inference:
+  - RoPE (Rotary Position Embedding)
+  - Causal attention masking
+  - Grouped Query Attention (GQA)
+  - Text generation with greedy sampling
 - Model configuration system via `model_config!` macro
-- Inference pipeline framework
-- Weight loading infrastructure (SafeTensors format)
 
 ### In Development
+- KV caching for efficient autoregressive generation
 - GPU acceleration backends (CUDA, Metal)
-- Real model weight loading from files
-- Additional model architectures (Qwen, Gemma, Phi, etc.)
 - Production inference server
+- End-to-end model testing with real weights
+
+### Implemented Model Categories (47 architectures)
+- **Core LLMs**: LLaMA, Qwen, Gemma, Phi, DeepSeek, Mistral, Mixtral
+- **GPT Family**: GPT-2, GPT-J, GPT-NeoX, OPT, BLOOM, MPT
+- **Code Models**: StarCoder, CodeLlama
+- **Standard Decoders**: OLMo, Granite
+- **Additional LLMs**: Yi, Falcon, Baichuan, InternLM, ChatGLM, BERT
+- **Specialized**: T5, Whisper, CLIP, LLaVA, Mamba, MiniCPM
+- **MoE Models**: DeepSeek-MoE, DBRX, Grok, Arctic, Jamba
+- **RWKV/Linear Attention**: RWKV-4, RWKV-6, RecurrentGemma
+- **Vision-Language**: Qwen2-VL, Phi-3-Vision, InternVL, CogVLM, Idefics, Florence
+- **Audio/Speech**: Wav2Vec2, HuBERT, MusicGen, Encodec
+
+### Test Commands
+```bash
+# Run the Ollama integration test (downloads TinyLlama, runs inference)
+cargo run --bin test_ollama -p runtime
+
+# List cached models
+cargo run --bin test_ollama -p runtime -- --list-cached
+
+# Use a different model
+cargo run --bin test_ollama -p runtime -- --model llama2:7b
+```
 
 ### Code Patterns to Follow
 
@@ -152,16 +181,24 @@ impl Model for YourModelV2 {
 
 ## Development Focus Areas
 
-1. **GPU Backend Implementation** - CUDA and Metal acceleration
-2. **Real Model Loading** - Actual SafeTensors/GGUF file loading
-3. **Model Architecture Completion** - Enable disabled model families
-4. **Production Server** - Complete inference server implementation
-5. **Performance Optimization** - Memory management and batching
+### Priority 1: Performance Critical
+1. **KV Caching** - Store computed K/V tensors to avoid recomputation during generation
+2. **GPU Backend** - CUDA and Metal acceleration for faster inference
+
+### Priority 2: Features
+3. **Enable More Models** - Qwen, Phi, Gemma have skeleton implementations, need config fixes
+4. **Advanced Sampling** - Temperature, top-p, top-k, repetition penalty
+5. **Streaming Generation** - Yield tokens as they're generated
+
+### Priority 3: Production
+6. **Production Server** - HTTP API with OpenAI-compatible endpoints
+7. **Continuous Batching** - Process multiple requests efficiently
+8. **Quantized Inference** - Use Q4/Q8 weights directly without dequantization
 
 ## Special Notes
 
 - The codebase has clean separation between abstractions and implementations
-- Compiler warnings (~76) are expected due to incomplete implementations
+- Compiler warnings are expected due to incomplete implementations (unused imports, etc.)
 - Focus on the three-layer abstraction system for all new development
-- GPU detection works but acceleration is not yet implemented
-- All models should use the same consistent patterns established in the abstractions
+- GPU operations currently delegate to CPU - real GPU kernels need implementation
+- All models should use the same consistent patterns established in LlamaModelV2

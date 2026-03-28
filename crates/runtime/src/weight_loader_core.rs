@@ -3,14 +3,217 @@
 //! This module provides unified weight loading that converts any supported
 //! weight format into our core tensor abstraction.
 
-use crate::tensor_core::{Tensor, Device, DataType, CpuStorage};
+use crate::tensor_core::{Tensor, Device, DataType, CpuStorage, CandleStorage};
 use crate::model_core::{ModelWeights, WeightMetadata, WeightFormat};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use serde_json::Value;
 use safetensors::SafeTensors;
+use candle_core::quantized::gguf_file;
+
+/// Configuration extracted from GGUF metadata
+#[derive(Debug, Clone, Default)]
+pub struct GGUFModelConfig {
+    pub architecture: String,
+    pub vocab_size: usize,
+    pub hidden_size: usize,
+    pub intermediate_size: usize,
+    pub num_hidden_layers: usize,
+    pub num_attention_heads: usize,
+    pub num_key_value_heads: usize,
+    pub head_dim: usize,
+    pub rms_norm_eps: f32,
+    pub rope_theta: f32,
+    pub max_position_embeddings: usize,
+}
+
+impl GGUFModelConfig {
+    /// Extract config from GGUF metadata
+    pub fn from_gguf_metadata(metadata: &HashMap<String, gguf_file::Value>) -> Self {
+        let architecture = extract_gguf_string(metadata, "general.architecture")
+            .unwrap_or_else(|| "llama".to_string());
+
+        // Try architecture-specific keys first, then fall back to llama keys
+        let arch_prefix = &architecture;
+
+        let vocab_size = extract_gguf_u32(metadata, &format!("{}.vocab_size", arch_prefix))
+            .or_else(|| extract_gguf_u32(metadata, "llama.vocab_size"))
+            .unwrap_or(32000) as usize;
+
+        let hidden_size = extract_gguf_u32(metadata, &format!("{}.embedding_length", arch_prefix))
+            .or_else(|| extract_gguf_u32(metadata, "llama.embedding_length"))
+            .unwrap_or(4096) as usize;
+
+        let intermediate_size = extract_gguf_u32(metadata, &format!("{}.feed_forward_length", arch_prefix))
+            .or_else(|| extract_gguf_u32(metadata, "llama.feed_forward_length"))
+            .unwrap_or(11008) as usize;
+
+        let num_hidden_layers = extract_gguf_u32(metadata, &format!("{}.block_count", arch_prefix))
+            .or_else(|| extract_gguf_u32(metadata, "llama.block_count"))
+            .unwrap_or(32) as usize;
+
+        let num_attention_heads = extract_gguf_u32(metadata, &format!("{}.attention.head_count", arch_prefix))
+            .or_else(|| extract_gguf_u32(metadata, "llama.attention.head_count"))
+            .unwrap_or(32) as usize;
+
+        let num_key_value_heads = extract_gguf_u32(metadata, &format!("{}.attention.head_count_kv", arch_prefix))
+            .or_else(|| extract_gguf_u32(metadata, "llama.attention.head_count_kv"))
+            .unwrap_or(num_attention_heads as u32) as usize;
+
+        let head_dim = if num_attention_heads > 0 {
+            hidden_size / num_attention_heads
+        } else {
+            128
+        };
+
+        let rms_norm_eps = extract_gguf_f32(metadata, &format!("{}.attention.layer_norm_rms_epsilon", arch_prefix))
+            .or_else(|| extract_gguf_f32(metadata, "llama.attention.layer_norm_rms_epsilon"))
+            .unwrap_or(1e-5);
+
+        let rope_theta = extract_gguf_f32(metadata, &format!("{}.rope.freq_base", arch_prefix))
+            .or_else(|| extract_gguf_f32(metadata, "llama.rope.freq_base"))
+            .unwrap_or(10000.0);
+
+        let max_position_embeddings = extract_gguf_u32(metadata, &format!("{}.context_length", arch_prefix))
+            .or_else(|| extract_gguf_u32(metadata, "llama.context_length"))
+            .unwrap_or(2048) as usize;
+
+        Self {
+            architecture,
+            vocab_size,
+            hidden_size,
+            intermediate_size,
+            num_hidden_layers,
+            num_attention_heads,
+            num_key_value_heads,
+            head_dim,
+            rms_norm_eps,
+            rope_theta,
+            max_position_embeddings,
+        }
+    }
+}
+
+/// Special token IDs extracted from GGUF
+#[derive(Debug, Clone, Default)]
+pub struct GGUFSpecialTokens {
+    pub bos_token_id: Option<u32>,
+    pub eos_token_id: Option<u32>,
+    pub unk_token_id: Option<u32>,
+    pub pad_token_id: Option<u32>,
+}
+
+/// Tokenizer data extracted from GGUF metadata
+#[derive(Debug, Clone)]
+pub struct GGUFTokenizer {
+    pub tokens: Vec<String>,
+    pub token_types: Option<Vec<i32>>,
+    pub scores: Option<Vec<f32>>,
+    pub model_type: String,
+    pub special_tokens: GGUFSpecialTokens,
+}
+
+impl GGUFTokenizer {
+    /// Extract tokenizer data from GGUF metadata
+    pub fn from_gguf_metadata(metadata: &HashMap<String, gguf_file::Value>) -> Option<Self> {
+        // Extract token list
+        let tokens = extract_gguf_string_array(metadata, "tokenizer.ggml.tokens")?;
+
+        if tokens.is_empty() {
+            return None;
+        }
+
+        // Extract token types (optional)
+        let token_types = extract_gguf_i32_array(metadata, "tokenizer.ggml.token_type");
+
+        // Extract BPE scores (optional)
+        let scores = extract_gguf_f32_array(metadata, "tokenizer.ggml.scores");
+
+        // Extract model type
+        let model_type = extract_gguf_string(metadata, "tokenizer.ggml.model")
+            .unwrap_or_else(|| "llama".to_string());
+
+        // Extract special token IDs
+        let special_tokens = GGUFSpecialTokens {
+            bos_token_id: extract_gguf_u32(metadata, "tokenizer.ggml.bos_token_id"),
+            eos_token_id: extract_gguf_u32(metadata, "tokenizer.ggml.eos_token_id"),
+            unk_token_id: extract_gguf_u32(metadata, "tokenizer.ggml.unknown_token_id"),
+            pad_token_id: extract_gguf_u32(metadata, "tokenizer.ggml.padding_token_id"),
+        };
+
+        Some(Self {
+            tokens,
+            token_types,
+            scores,
+            model_type,
+            special_tokens,
+        })
+    }
+
+    /// Get vocab size
+    pub fn vocab_size(&self) -> usize {
+        self.tokens.len()
+    }
+}
+
+/// Extract string array from GGUF metadata
+fn extract_gguf_string_array(metadata: &HashMap<String, gguf_file::Value>, key: &str) -> Option<Vec<String>> {
+    match metadata.get(key) {
+        Some(gguf_file::Value::Array(arr)) => {
+            let strings: Vec<String> = arr.iter()
+                .filter_map(|v| {
+                    if let gguf_file::Value::String(s) = v {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if strings.is_empty() { None } else { Some(strings) }
+        }
+        _ => None,
+    }
+}
+
+/// Extract i32 array from GGUF metadata
+fn extract_gguf_i32_array(metadata: &HashMap<String, gguf_file::Value>, key: &str) -> Option<Vec<i32>> {
+    match metadata.get(key) {
+        Some(gguf_file::Value::Array(arr)) => {
+            let nums: Vec<i32> = arr.iter()
+                .filter_map(|v| {
+                    match v {
+                        gguf_file::Value::I32(n) => Some(*n),
+                        gguf_file::Value::U32(n) => Some(*n as i32),
+                        _ => None,
+                    }
+                })
+                .collect();
+            if nums.is_empty() { None } else { Some(nums) }
+        }
+        _ => None,
+    }
+}
+
+/// Extract f32 array from GGUF metadata
+fn extract_gguf_f32_array(metadata: &HashMap<String, gguf_file::Value>, key: &str) -> Option<Vec<f32>> {
+    match metadata.get(key) {
+        Some(gguf_file::Value::Array(arr)) => {
+            let nums: Vec<f32> = arr.iter()
+                .filter_map(|v| {
+                    match v {
+                        gguf_file::Value::F32(n) => Some(*n),
+                        gguf_file::Value::F64(n) => Some(*n as f32),
+                        _ => None,
+                    }
+                })
+                .collect();
+            if nums.is_empty() { None } else { Some(nums) }
+        }
+        _ => None,
+    }
+}
 
 /// Core weight loader trait - abstracts loading from different formats
 pub trait WeightLoader: Send + Sync {
@@ -264,30 +467,69 @@ impl WeightLoader for GGUFWeightLoader {
     fn load_weights(&self, path: &Path) -> Result<ModelWeights> {
         println!("Loading GGUF weights from: {}", path.display());
 
-        // Placeholder implementation
-        // Real implementation would parse GGUF format
+        // Open the GGUF file
+        let mut file = std::fs::File::open(path)?;
+        let content = gguf_file::Content::read(&mut file)
+            .map_err(|e| anyhow!("Failed to read GGUF file: {}", e))?;
 
+        println!("GGUF file loaded - {} tensors, {} metadata keys",
+            content.tensor_infos.len(),
+            content.metadata.len());
+
+        // Extract model config from GGUF metadata
+        let gguf_config = GGUFModelConfig::from_gguf_metadata(&content.metadata);
+
+        println!("Model architecture: {}", gguf_config.architecture);
+        println!("Model config: vocab_size={}, hidden_size={}, num_layers={}, heads={}, kv_heads={}",
+            gguf_config.vocab_size, gguf_config.hidden_size, gguf_config.num_hidden_layers,
+            gguf_config.num_attention_heads, gguf_config.num_key_value_heads);
+
+        // Extract tokenizer from GGUF metadata
+        let gguf_tokenizer = GGUFTokenizer::from_gguf_metadata(&content.metadata);
+        if let Some(ref tok) = gguf_tokenizer {
+            println!("Tokenizer extracted: vocab_size={}, model_type={}",
+                tok.vocab_size(), tok.model_type);
+        } else {
+            println!("No tokenizer data found in GGUF metadata");
+        }
+
+        // Load tensors
+        let device = candle_core::Device::Cpu;
         let mut tensors = HashMap::new();
+        let mut total_params = 0usize;
 
-        // Create placeholder tensors
-        let storage = Arc::new(CpuStorage::zeros(1024 * 4));
-        let tensor = Tensor::new(
-            vec![256, 4],
-            DataType::Float32,
-            Device::CPU,
-            storage
-        );
+        for (name, tensor_info) in content.tensor_infos.iter() {
+            // Read the quantized tensor
+            let qtensor = tensor_info.read(&mut file, content.tensor_data_offset, &device)
+                .map_err(|e| anyhow!("Failed to read tensor '{}': {}", name, e))?;
 
-        tensors.insert("gguf_weight".to_string(), tensor);
+            // Dequantize to f32 for compatibility with our existing ops
+            let candle_tensor = qtensor.dequantize(&device)
+                .map_err(|e| anyhow!("Failed to dequantize tensor '{}': {}", name, e))?;
+
+            // Track parameters
+            total_params += candle_tensor.elem_count();
+
+            // Convert GGUF tensor name to HuggingFace-style name
+            let hf_name = gguf_to_hf_name(name);
+
+            // Wrap in our Tensor type using CandleStorage
+            let tensor = Tensor::from_candle(candle_tensor);
+
+            tensors.insert(hf_name, tensor);
+        }
+
+        println!("Loaded {} tensors, {} total parameters",
+            tensors.len(), total_params);
 
         let metadata = WeightMetadata {
-            architecture: "unknown".to_string(),
-            total_params: tensors.len(),
+            architecture: gguf_config.architecture.clone(),
+            total_params,
             format: WeightFormat::GGUF,
-            dtype: "float32".to_string(),
+            dtype: "quantized".to_string(),
         };
 
-        Ok(ModelWeights::new(tensors, metadata))
+        Ok(ModelWeights::with_gguf_config_and_tokenizer(tensors, metadata, gguf_config, gguf_tokenizer))
     }
 
     fn supports(&self, path: &Path) -> bool {
@@ -399,6 +641,85 @@ static MODEL_LOADER: std::sync::OnceLock<ModelLoader> = std::sync::OnceLock::new
 /// Get global model loader
 pub fn loader() -> &'static ModelLoader {
     MODEL_LOADER.get_or_init(|| ModelLoader::new())
+}
+
+// === GGUF Helper Functions ===
+
+/// Extract a string value from GGUF metadata
+fn extract_gguf_string(metadata: &HashMap<String, gguf_file::Value>, key: &str) -> Option<String> {
+    metadata.get(key).and_then(|v| {
+        if let gguf_file::Value::String(s) = v {
+            Some(s.clone())
+        } else {
+            None
+        }
+    })
+}
+
+/// Extract a u32 value from GGUF metadata
+fn extract_gguf_u32(metadata: &HashMap<String, gguf_file::Value>, key: &str) -> Option<u32> {
+    metadata.get(key).and_then(|v| {
+        match v {
+            gguf_file::Value::U32(n) => Some(*n),
+            gguf_file::Value::I32(n) => Some(*n as u32),
+            gguf_file::Value::U64(n) => Some(*n as u32),
+            gguf_file::Value::I64(n) => Some(*n as u32),
+            _ => None,
+        }
+    })
+}
+
+/// Extract a f32 value from GGUF metadata
+fn extract_gguf_f32(metadata: &HashMap<String, gguf_file::Value>, key: &str) -> Option<f32> {
+    metadata.get(key).and_then(|v| {
+        match v {
+            gguf_file::Value::F32(n) => Some(*n),
+            gguf_file::Value::F64(n) => Some(*n as f32),
+            _ => None,
+        }
+    })
+}
+
+/// Convert GGUF tensor names to HuggingFace-style names
+/// GGUF uses different naming conventions than HuggingFace models
+fn gguf_to_hf_name(gguf_name: &str) -> String {
+    // Common GGUF to HF name mappings
+    // NOTE: Order matters! More specific patterns must come before less specific ones
+    // e.g., ".attn_output.weight" must be replaced before "output.weight"
+    let name = gguf_name
+        // Token embeddings
+        .replace("token_embd.weight", "model.embed_tokens.weight")
+        // Block/layer prefix
+        .replace("blk.", "model.layers.")
+        // Attention layers - weights (MUST come before output.weight replacement!)
+        .replace(".attn_output.weight", ".self_attn.o_proj.weight")
+        .replace(".attn_q.weight", ".self_attn.q_proj.weight")
+        .replace(".attn_k.weight", ".self_attn.k_proj.weight")
+        .replace(".attn_v.weight", ".self_attn.v_proj.weight")
+        // Attention layers - biases
+        .replace(".attn_output.bias", ".self_attn.o_proj.bias")
+        .replace(".attn_q.bias", ".self_attn.q_proj.bias")
+        .replace(".attn_k.bias", ".self_attn.k_proj.bias")
+        .replace(".attn_v.bias", ".self_attn.v_proj.bias")
+        // Output layer (MUST come after attn_output to avoid partial match)
+        .replace("output_norm.weight", "model.norm.weight")
+        .replace("output.weight", "lm_head.weight")
+        // MLP layers - weights
+        .replace(".ffn_gate.weight", ".mlp.gate_proj.weight")
+        .replace(".ffn_up.weight", ".mlp.up_proj.weight")
+        .replace(".ffn_down.weight", ".mlp.down_proj.weight")
+        // MLP layers - biases
+        .replace(".ffn_gate.bias", ".mlp.gate_proj.bias")
+        .replace(".ffn_up.bias", ".mlp.up_proj.bias")
+        .replace(".ffn_down.bias", ".mlp.down_proj.bias")
+        // Layer norms - weights
+        .replace(".attn_norm.weight", ".input_layernorm.weight")
+        .replace(".ffn_norm.weight", ".post_attention_layernorm.weight")
+        // Layer norms - biases (some models have these)
+        .replace(".attn_norm.bias", ".input_layernorm.bias")
+        .replace(".ffn_norm.bias", ".post_attention_layernorm.bias");
+
+    name
 }
 
 #[cfg(test)]

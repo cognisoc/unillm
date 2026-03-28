@@ -13,7 +13,15 @@ UniLLM is a modern, high-performance inference runtime built in Rust, designed w
 - **Memory Safety** - Rust prevents entire classes of production bugs
 
 ### 🤖 Model Support
-- **18+ Model Families** - Llama, Qwen, Gemma, Phi, DeepSeek, Yi, Baichuan, InternLM, ChatGLM, Falcon, BERT, T5, Whisper, CLIP, LLaVA, Mamba, MiniCPM
+- **45+ Model Architectures** across 10 categories
+- **Core LLMs** - LLaMA, Qwen, Gemma, Phi, DeepSeek, Mistral, Mixtral
+- **GPT Family** - GPT-2, GPT-J, GPT-NeoX, OPT, BLOOM, MPT
+- **Code Models** - StarCoder, CodeLlama
+- **MoE Models** - DeepSeek-MoE, DBRX, Grok, Arctic, Jamba
+- **RWKV/Linear** - RWKV-4, RWKV-6, RecurrentGemma
+- **Vision-Language** - Qwen2-VL, Phi-3-Vision, InternVL, CogVLM, Idefics, Florence, LLaVA, CLIP
+- **Audio/Speech** - Wav2Vec2, HuBERT, MusicGen, Encodec, Whisper
+- **Additional** - Yi, Falcon, Baichuan, InternLM, ChatGLM, BERT, T5, Mamba, MiniCPM, OLMo, Granite
 - **Consistent Implementation** - All models use the same solid abstractions
 - **Easy Extension** - Add new models with minimal boilerplate
 
@@ -119,22 +127,39 @@ impl Model for LlamaModelV2 {
 
 ### Current Status
 
-✅ **Architecture Complete**
-- Clean module structure established
-- All 18 model families migrated to V2 implementations
-- Solid abstractions working properly
-- Project compiles successfully
+✅ **Core Infrastructure Complete**
+- Clean module structure with TensorCore, ModelCore, WeightLoaderCore
+- 47 model architectures implemented across 10 categories
+- Project compiles with 166 passing tests
+
+✅ **GGUF Integration Working**
+- Ollama registry integration for model downloads
+- GGUF weight loading with dequantization (Q4_0, Q8_0, etc.)
+- GGUF tokenizer extraction (vocabulary, special tokens)
+- Tensor name mapping (GGUF → HuggingFace format)
+
+✅ **LLaMA Inference Pipeline**
+- Complete forward pass with real tensor operations
+- RoPE (Rotary Position Embedding) implemented
+- Causal attention masking for autoregressive generation
+- Grouped Query Attention (GQA) support
+- Text generation with greedy sampling
 
 🚧 **In Progress**
-- Basic inference pipeline implementation
-- Weight loading from real model files
-- GPU acceleration backends
+- KV caching for efficient autoregressive generation
+- Additional sampling methods (temperature, top-p, top-k)
 
-📋 **Planned**
-- Production-ready inference server
-- API compatibility layers
-- Performance optimizations
-- Comprehensive testing
+📋 **Next Priorities**
+1. **KV Cache** - Critical for efficient multi-token generation
+2. **GPU Acceleration** - CUDA and Metal backends
+3. **Production Server** - HTTP API with streaming responses
+4. **Model Testing** - End-to-end validation with real weights
+
+📋 **Future**
+- Continuous batching
+- Speculative decoding
+- Quantized inference (use quantized weights directly)
+- Distributed inference
 
 ### Adding New Models
 

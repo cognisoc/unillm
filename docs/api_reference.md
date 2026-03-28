@@ -289,27 +289,77 @@ impl ModelWeights {
 
 ### Supported Model Families
 
-All models implement the `Model` trait with consistent patterns:
+All 47 model architectures implement the `Model` trait with consistent patterns:
 
 ```rust
 // Available in models_v2::
-pub use llama::LlamaModelV2;      // Llama, Llama2, Code Llama, etc.
-pub use qwen::QwenModelV2;        // Qwen, Qwen1.5, Qwen2, QwenVL
-pub use gemma::GemmaModelV2;      // Gemma-2B, Gemma-7B
-pub use phi::PhiModelV2;          // Phi-1, Phi-1.5, Phi-2, Phi-3
-pub use deepseek::DeepSeekModelV2;// DeepSeek-Coder, DeepSeek-Chat
-pub use yi::YiModelV2;            // Yi-6B, Yi-34B, Yi-Chat
-pub use baichuan::BaichuanModelV2;// Baichuan-7B, Baichuan-13B
-pub use internlm::InternLMModelV2;// InternLM, InternLM2
-pub use chatglm::ChatGLMModelV2;  // ChatGLM-6B, ChatGLM2-6B, ChatGLM3
-pub use falcon::FalconModelV2;    // Falcon-7B, Falcon-40B
-pub use bert::BertModelV2;        // BERT, RoBERTa, etc.
-pub use t5::T5ModelV2;            // T5, UL2, Flan-T5
-pub use whisper::WhisperModelV2;  // Whisper speech recognition
-pub use clip::ClipModelV2;        // CLIP vision-language
-pub use llava::LlavaModelV2;      // LLaVA multimodal
-pub use mamba::MambaModelV2;      // Mamba state-space models
-pub use minicpm::MiniCPMModelV2;  // MiniCPM efficient models
+
+// Core LLMs
+pub use llama::LlamaModelV2;          // LLaMA, LLaMA-2, LLaMA-3, Code Llama
+pub use qwen::QwenModelV2;            // Qwen, Qwen-1.5, Qwen-2
+pub use gemma::GemmaModelV2;          // Gemma-2B, Gemma-7B
+pub use phi::PhiModelV2;              // Phi-1, Phi-1.5, Phi-2, Phi-3
+pub use deepseek::DeepSeekModelV2;    // DeepSeek-Coder, DeepSeek-Chat
+pub use mistral::MistralModelV2;      // Mistral-7B
+pub use mixtral::MixtralModelV2;      // Mixtral-8x7B (MoE)
+
+// GPT Family
+pub use gpt2::GPT2ModelV2;            // GPT-2 (all sizes)
+pub use gptj::GPTJModelV2;            // GPT-J-6B
+pub use gptneox::GPTNeoXModelV2;      // GPT-NeoX-20B, Pythia
+pub use opt::OPTModelV2;              // OPT (all sizes)
+pub use bloom::BloomModelV2;          // BLOOM, BLOOMZ
+pub use mpt::MPTModelV2;              // MPT-7B, MPT-30B
+
+// Code Models
+pub use starcoder::StarCoderModelV2;  // StarCoder, StarCoder2
+pub use codellama::CodeLlamaModelV2;  // CodeLlama (all sizes)
+
+// Standard Decoders
+pub use olmo::OlmoModelV2;            // OLMo-7B
+pub use granite::GraniteModelV2;      // IBM Granite
+
+// Additional LLMs
+pub use yi::YiModelV2;                // Yi-6B, Yi-34B, Yi-Chat
+pub use falcon::FalconModelV2;        // Falcon-7B, Falcon-40B
+pub use baichuan::BaichuanModelV2;    // Baichuan-7B, Baichuan-13B
+pub use internlm::InternLMModelV2;    // InternLM, InternLM2
+pub use chatglm::ChatGLMModelV2;      // ChatGLM-6B, ChatGLM2-6B, ChatGLM3
+pub use bert::BertModelV2;            // BERT, RoBERTa, etc.
+
+// Specialized Architectures
+pub use t5::T5ModelV2;                // T5, UL2, Flan-T5
+pub use whisper::WhisperModelV2;      // Whisper speech recognition
+pub use clip::ClipModelV2;            // CLIP vision-language
+pub use llava::LlavaModelV2;          // LLaVA multimodal
+pub use mamba::MambaModelV2;          // Mamba state-space models
+pub use minicpm::MiniCPMModelV2;      // MiniCPM efficient models
+
+// MoE (Mixture of Experts) Models
+pub use deepseek_moe::DeepSeekMoEModelV2;  // Fine-grained MoE
+pub use dbrx::DbrxModelV2;                  // Databricks MoE
+pub use grok::GrokModelV2;                  // xAI MoE
+pub use arctic::ArcticModelV2;              // Snowflake dense+MoE
+pub use jamba::JambaModelV2;                // Mamba + Attention + MoE
+
+// RWKV / Linear Attention
+pub use rwkv4::RWKV4ModelV2;                // RWKV-4 linear attention
+pub use rwkv6::RWKV6ModelV2;                // RWKV-6 matrix states
+pub use recurrent_gemma::RecurrentGemmaModelV2;  // Griffin architecture
+
+// Vision-Language Models
+pub use qwen2_vl::Qwen2VLModelV2;           // Qwen + 3D patch ViT
+pub use phi3_vision::Phi3VisionModelV2;     // Phi-3 + CLIP
+pub use internvl::InternVLModelV2;          // InternLM + InternViT
+pub use cogvlm::CogVLMModelV2;              // Expert attention VLM
+pub use idefics::IdeficsModelV2;            // Cross-attention VLM
+pub use florence::FlorenceModelV2;          // Microsoft vision-language
+
+// Audio/Speech Models
+pub use wav2vec2::Wav2Vec2ModelV2;          // CNN + Transformer encoder
+pub use hubert::HuBERTModelV2;              // Self-supervised audio
+pub use musicgen::MusicGenModelV2;          // Music generation
+pub use encodec::EncodecModelV2;            // Neural audio codec
 ```
 
 ### Common Usage Pattern

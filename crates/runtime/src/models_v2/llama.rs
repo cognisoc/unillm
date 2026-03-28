@@ -33,6 +33,24 @@ model_config!(LlamaConfig {
     attention_bias: bool = false,
 });
 
+impl LlamaConfig {
+    /// Create LlamaConfig from GGUF model configuration
+    pub fn from_gguf_config(gguf: &crate::weight_loader_core::GGUFModelConfig) -> Self {
+        Self {
+            vocab_size: gguf.vocab_size,
+            hidden_size: gguf.hidden_size,
+            intermediate_size: gguf.intermediate_size,
+            num_hidden_layers: gguf.num_hidden_layers,
+            num_attention_heads: gguf.num_attention_heads,
+            num_key_value_heads: gguf.num_key_value_heads,
+            rms_norm_eps: gguf.rms_norm_eps,
+            rope_theta: gguf.rope_theta,
+            max_position_embeddings: gguf.max_position_embeddings,
+            ..Default::default()
+        }
+    }
+}
+
 /// Main Llama model implementation
 pub struct LlamaModelV2 {
     config: LlamaConfig,
@@ -122,6 +140,7 @@ impl Model for LlamaModelV2 {
         let mut model = Self::new(config)?;
 
         // Load weights from the unified weight container
+        // Note: embedding weight is not transposed (used for index lookup)
         if let Some(embed_weights) = weights.get("model.embed_tokens.weight") {
             model.embed_tokens = embed_weights.clone();
         }
@@ -130,8 +149,9 @@ impl Model for LlamaModelV2 {
             model.norm = norm_weights.clone();
         }
 
+        // lm_head weight needs transpose: [vocab, hidden] -> [hidden, vocab] for matmul
         if let Some(lm_head_weights) = weights.get("lm_head.weight") {
-            model.lm_head = lm_head_weights.clone();
+            model.lm_head = ops_fn::transpose(lm_head_weights)?;
         }
 
         // Load layer weights
@@ -145,12 +165,24 @@ impl Model for LlamaModelV2 {
     fn forward(&self, inputs: &ModelInputs) -> Result<ModelOutputs> {
         match inputs {
             ModelInputs::Text { input_ids, attention_mask, .. } => {
+                // Debug: print input shape
+                // println!("Forward: input_ids shape: {:?}", input_ids.shape());
+
                 // 1. Token embedding
                 let mut hidden_states = ops_fn::embedding(input_ids, &self.embed_tokens)?;
 
-                // 2. Apply transformer layers
+                // Debug: check embedding output (disabled for cleaner output)
+                // let emb_candle = hidden_states.to_candle()?;
+                // let emb_slice: Vec<f32> = emb_candle.flatten_all()?.to_vec1()?;
+                // let emb_sum: f32 = emb_slice.iter().take(100).sum();
+                // let emb_max = emb_slice.iter().take(100).cloned().fold(f32::NEG_INFINITY, f32::max);
+                // let emb_min = emb_slice.iter().take(100).cloned().fold(f32::INFINITY, f32::min);
+                // println!("After embedding: shape={:?}, sample sum={:.4}, min={:.4}, max={:.4}",
+                //     hidden_states.shape(), emb_sum, emb_min, emb_max);
+
+                // 2. Apply transformer layers (with RoPE)
                 for layer in &self.layers {
-                    hidden_states = layer.forward(&hidden_states, attention_mask.as_ref())?;
+                    hidden_states = layer.forward(&hidden_states, attention_mask.as_ref(), self.config.rope_theta)?;
                 }
 
                 // 3. Final layer norm
@@ -161,7 +193,7 @@ impl Model for LlamaModelV2 {
 
                 Ok(ModelOutputs::Logits {
                     logits,
-                    hidden_states: Some(hidden_states),
+                    hidden_states: None,  // Don't return hidden states to save memory
                 })
             }
             ModelInputs::Multimodal { input_ids, .. } => {
@@ -178,17 +210,106 @@ impl Model for LlamaModelV2 {
     }
 
     fn generate(&self, prompt: &str, config: &GenerationConfig) -> Result<String> {
-        // Simplified generation for now
-        // Real implementation would:
-        // 1. Tokenize prompt
-        // 2. Forward pass to get logits
-        // 3. Sample next token
-        // 4. Repeat until stop condition
+        use crate::tokenizer::Tokenizer;
+        use rand::Rng;
 
-        Ok(format!(
-            "Llama generated response to '{}' (max_tokens: {}, temp: {:.2})",
-            prompt, config.max_new_tokens, config.temperature
-        ))
+        // 1. Tokenize prompt
+        let tokenizer = Tokenizer::new();
+        let mut tokens: Vec<u32> = tokenizer.encode(prompt);
+
+        // 2. Generation loop
+        for _ in 0..config.max_new_tokens {
+            // Create input tensor from current tokens
+            let tokens_i64: Vec<i64> = tokens.iter().map(|&t| t as i64).collect();
+            let input_tensor = Tensor::from_i64_slice(&tokens_i64, &[1, tokens.len()], &self.device)?;
+
+            let inputs = ModelInputs::Text {
+                input_ids: input_tensor,
+                attention_mask: None,
+                position_ids: None,
+            };
+
+            // 3. Forward pass
+            let outputs = self.forward(&inputs)?;
+
+            // 4. Get logits and sample next token
+            let logits = match outputs {
+                ModelOutputs::Logits { logits, .. } => logits,
+                _ => return Err(anyhow::anyhow!("Expected logits output")),
+            };
+
+            // Get last token logits
+            let logits_candle = logits.to_candle()?;
+            let shape = logits_candle.dims();
+
+            // Extract last position logits [batch, seq, vocab] -> [vocab]
+            let last_logits = if shape.len() == 3 {
+                let seq_len = shape[1];
+                logits_candle
+                    .narrow(1, seq_len - 1, 1)?
+                    .squeeze(1)?
+                    .squeeze(0)?
+            } else {
+                let seq_len = shape[0];
+                logits_candle
+                    .narrow(0, seq_len - 1, 1)?
+                    .squeeze(0)?
+            };
+
+            // Convert to probabilities and sample
+            let logits_vec: Vec<f32> = last_logits.to_vec1()?;
+
+            let next_token = if config.do_sample && config.temperature > 0.0 {
+                // Temperature sampling
+                let scaled: Vec<f32> = logits_vec.iter()
+                    .map(|&x| x / config.temperature)
+                    .collect();
+
+                // Softmax
+                let max_val = scaled.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let exp_sum: f32 = scaled.iter().map(|&x| (x - max_val).exp()).sum();
+                let probs: Vec<f32> = scaled.iter()
+                    .map(|&x| (x - max_val).exp() / exp_sum)
+                    .collect();
+
+                // Sample from distribution
+                let mut rng = rand::thread_rng();
+                let random_val: f32 = rng.gen();
+                let mut cumulative = 0.0;
+                let mut sampled = 0u32;
+
+                for (idx, &prob) in probs.iter().enumerate() {
+                    cumulative += prob;
+                    if random_val <= cumulative {
+                        sampled = idx as u32;
+                        break;
+                    }
+                }
+                sampled
+            } else {
+                // Greedy sampling
+                let mut max_idx = 0;
+                let mut max_val = logits_vec[0];
+                for (idx, &val) in logits_vec.iter().enumerate() {
+                    if val > max_val {
+                        max_val = val;
+                        max_idx = idx;
+                    }
+                }
+                max_idx as u32
+            };
+
+            // 5. Check for EOS
+            if next_token == config.eos_token_id {
+                break;
+            }
+
+            // 6. Append token
+            tokens.push(next_token);
+        }
+
+        // 7. Decode and return
+        Ok(tokenizer.decode(&tokens))
     }
 
     fn config(&self) -> &Self::Config {
@@ -247,12 +368,12 @@ impl LlamaLayer {
         })
     }
 
-    fn forward(&self, hidden_states: &Tensor, attention_mask: Option<&Tensor>) -> Result<Tensor> {
+    fn forward(&self, hidden_states: &Tensor, attention_mask: Option<&Tensor>, rope_theta: f32) -> Result<Tensor> {
         // 1. Pre-attention layer norm
         let normed = ops_fn::layer_norm(hidden_states, &self.input_layernorm, None, 1e-6)?;
 
-        // 2. Self attention
-        let attn_output = self.self_attn.forward(&normed, attention_mask)?;
+        // 2. Self attention (with RoPE)
+        let attn_output = self.self_attn.forward(&normed, attention_mask, rope_theta)?;
 
         // 3. Residual connection
         let hidden_states = ops_fn::add(hidden_states, &attn_output)?;
@@ -272,32 +393,32 @@ impl LlamaLayer {
     fn load_weights(&mut self, weights: &ModelWeights, layer_idx: usize) -> Result<()> {
         let prefix = format!("model.layers.{}", layer_idx);
 
-        // Load attention weights
+        // Load attention weights (transpose for matmul: [out, in] -> [in, out])
         if let Some(q_proj) = weights.get(&format!("{}.self_attn.q_proj.weight", prefix)) {
-            self.self_attn.q_proj = q_proj.clone();
+            self.self_attn.q_proj = ops_fn::transpose(q_proj)?;
         }
         if let Some(k_proj) = weights.get(&format!("{}.self_attn.k_proj.weight", prefix)) {
-            self.self_attn.k_proj = k_proj.clone();
+            self.self_attn.k_proj = ops_fn::transpose(k_proj)?;
         }
         if let Some(v_proj) = weights.get(&format!("{}.self_attn.v_proj.weight", prefix)) {
-            self.self_attn.v_proj = v_proj.clone();
+            self.self_attn.v_proj = ops_fn::transpose(v_proj)?;
         }
         if let Some(o_proj) = weights.get(&format!("{}.self_attn.o_proj.weight", prefix)) {
-            self.self_attn.o_proj = o_proj.clone();
+            self.self_attn.o_proj = ops_fn::transpose(o_proj)?;
         }
 
-        // Load MLP weights
+        // Load MLP weights (transpose for matmul: [out, in] -> [in, out])
         if let Some(gate_proj) = weights.get(&format!("{}.mlp.gate_proj.weight", prefix)) {
-            self.mlp.gate_proj = gate_proj.clone();
+            self.mlp.gate_proj = ops_fn::transpose(gate_proj)?;
         }
         if let Some(up_proj) = weights.get(&format!("{}.mlp.up_proj.weight", prefix)) {
-            self.mlp.up_proj = up_proj.clone();
+            self.mlp.up_proj = ops_fn::transpose(up_proj)?;
         }
         if let Some(down_proj) = weights.get(&format!("{}.mlp.down_proj.weight", prefix)) {
-            self.mlp.down_proj = down_proj.clone();
+            self.mlp.down_proj = ops_fn::transpose(down_proj)?;
         }
 
-        // Load layer norm weights
+        // Load layer norm weights (no transpose needed - 1D tensors)
         if let Some(input_ln) = weights.get(&format!("{}.input_layernorm.weight", prefix)) {
             self.input_layernorm = input_ln.clone();
         }
@@ -315,6 +436,71 @@ impl LlamaLayer {
         self.post_attention_layernorm = self.post_attention_layernorm.to_device(device)?;
         Ok(())
     }
+}
+
+/// Apply Rotary Position Embedding (RoPE) to Q and K tensors
+/// Input shape: [batch, heads, seq, head_dim]
+/// Returns tensors with same shape but with positional information encoded
+fn apply_rope(
+    q: &candle_core::Tensor,
+    k: &candle_core::Tensor,
+    seq_len: usize,
+    head_dim: usize,
+    rope_theta: f32,
+) -> Result<(candle_core::Tensor, candle_core::Tensor)> {
+    use candle_core::{DType, Device};
+
+    let device = q.device();
+
+    // Compute inverse frequencies: 1 / (theta^(2i/d)) for i in [0, d/2)
+    let half_dim = head_dim / 2;
+    let inv_freq: Vec<f32> = (0..half_dim)
+        .map(|i| 1.0 / rope_theta.powf((2 * i) as f32 / head_dim as f32))
+        .collect();
+
+    // Create position indices [0, 1, 2, ..., seq_len-1]
+    let positions: Vec<f32> = (0..seq_len).map(|p| p as f32).collect();
+
+    // Compute angles: pos * inv_freq -> [seq_len, half_dim]
+    let mut angles = Vec::with_capacity(seq_len * half_dim);
+    for pos in &positions {
+        for freq in &inv_freq {
+            angles.push(pos * freq);
+        }
+    }
+
+    let angles_tensor = candle_core::Tensor::from_vec(angles, &[seq_len, half_dim], device)?;
+
+    // Compute cos and sin
+    let cos = angles_tensor.cos()?;
+    let sin = angles_tensor.sin()?;
+
+    // Reshape for broadcasting: [1, 1, seq_len, half_dim]
+    let cos = cos.unsqueeze(0)?.unsqueeze(0)?;
+    let sin = sin.unsqueeze(0)?.unsqueeze(0)?;
+
+    // Apply RoPE rotation
+    // Split q and k into two halves along head_dim
+    // q = [q1, q2], k = [k1, k2] where each half has shape [..., half_dim]
+    // rotated_q = [q1*cos - q2*sin, q1*sin + q2*cos]
+    // rotated_k = [k1*cos - k2*sin, k1*sin + k2*cos]
+
+    let q_half1 = q.narrow(3, 0, half_dim)?;
+    let q_half2 = q.narrow(3, half_dim, half_dim)?;
+    let k_half1 = k.narrow(3, 0, half_dim)?;
+    let k_half2 = k.narrow(3, half_dim, half_dim)?;
+
+    // Apply rotation
+    let q_rot1 = (q_half1.broadcast_mul(&cos)? - q_half2.broadcast_mul(&sin)?)?;
+    let q_rot2 = (q_half1.broadcast_mul(&sin)? + q_half2.broadcast_mul(&cos)?)?;
+    let k_rot1 = (k_half1.broadcast_mul(&cos)? - k_half2.broadcast_mul(&sin)?)?;
+    let k_rot2 = (k_half1.broadcast_mul(&sin)? + k_half2.broadcast_mul(&cos)?)?;
+
+    // Concatenate rotated halves
+    let q_rotated = candle_core::Tensor::cat(&[&q_rot1, &q_rot2], 3)?;
+    let k_rotated = candle_core::Tensor::cat(&[&k_rot1, &k_rot2], 3)?;
+
+    Ok((q_rotated, k_rotated))
 }
 
 impl LlamaAttention {
@@ -341,20 +527,113 @@ impl LlamaAttention {
         })
     }
 
-    fn forward(&self, hidden_states: &Tensor, attention_mask: Option<&Tensor>) -> Result<Tensor> {
+    fn forward(&self, hidden_states: &Tensor, _attention_mask: Option<&Tensor>, rope_theta: f32) -> Result<Tensor> {
+        // Get batch and sequence length from hidden_states shape
+        let shape = hidden_states.shape();
+        let (batch_size, seq_len, _hidden_size) = if shape.len() == 3 {
+            (shape[0], shape[1], shape[2])
+        } else if shape.len() == 2 {
+            (1, shape[0], shape[1])
+        } else {
+            return Err(anyhow::anyhow!("Invalid hidden_states shape: {:?}", shape));
+        };
+
         // 1. Project to Q, K, V
+        // Q: [batch, seq, hidden] @ [hidden, num_heads * head_dim] -> [batch, seq, num_heads * head_dim]
+        // K: [batch, seq, hidden] @ [hidden, num_kv_heads * head_dim] -> [batch, seq, num_kv_heads * head_dim]
+        // V: [batch, seq, hidden] @ [hidden, num_kv_heads * head_dim] -> [batch, seq, num_kv_heads * head_dim]
         let query_states = ops_fn::matmul(hidden_states, &self.q_proj)?;
         let key_states = ops_fn::matmul(hidden_states, &self.k_proj)?;
         let value_states = ops_fn::matmul(hidden_states, &self.v_proj)?;
 
-        // 2. Reshape for attention heads
-        // For simplicity, keeping as is for now
-        // Real implementation would reshape to [batch, seq, num_heads, head_dim]
+        // 2. Reshape for multi-head attention
+        // Q: [batch, seq, num_heads * head_dim] -> [batch, num_heads, seq, head_dim]
+        // K: [batch, seq, num_kv_heads * head_dim] -> [batch, num_kv_heads, seq, head_dim]
+        let q_candle = query_states.to_candle()?;
+        let k_candle = key_states.to_candle()?;
+        let v_candle = value_states.to_candle()?;
 
-        // 3. Scaled dot-product attention using our unified ops
-        let attn_output = ops_fn::attention(&query_states, &key_states, &value_states, attention_mask)?;
+        // Reshape: [batch, seq, heads*head_dim] -> [batch, seq, heads, head_dim] -> [batch, heads, seq, head_dim]
+        let q_reshaped = q_candle
+            .reshape(&[batch_size, seq_len, self.num_heads, self.head_dim])?
+            .transpose(1, 2)?;  // [batch, heads, seq, head_dim]
 
-        // 4. Output projection
+        let k_reshaped = k_candle
+            .reshape(&[batch_size, seq_len, self.num_key_value_heads, self.head_dim])?
+            .transpose(1, 2)?;  // [batch, kv_heads, seq, head_dim]
+
+        let v_reshaped = v_candle
+            .reshape(&[batch_size, seq_len, self.num_key_value_heads, self.head_dim])?
+            .transpose(1, 2)?;  // [batch, kv_heads, seq, head_dim]
+
+        // 2.5 Apply RoPE (Rotary Position Embedding) to Q and K
+        let (q_with_rope, k_with_rope) = apply_rope(&q_reshaped, &k_reshaped, seq_len, self.head_dim, rope_theta)?;
+
+        // 3. Handle GQA (Grouped Query Attention) - repeat K/V heads to match Q heads
+        let num_groups = self.num_heads / self.num_key_value_heads;
+        let (k_expanded, v_expanded) = if num_groups > 1 {
+            // Repeat K and V along the head dimension
+            // [batch, kv_heads, seq, head_dim] -> [batch, num_heads, seq, head_dim]
+            let k_rep = k_with_rope
+                .unsqueeze(2)?  // [batch, kv_heads, 1, seq, head_dim]
+                .broadcast_as(&[batch_size, self.num_key_value_heads, num_groups, seq_len, self.head_dim])?
+                .reshape(&[batch_size, self.num_heads, seq_len, self.head_dim])?;
+            let v_rep = v_reshaped
+                .unsqueeze(2)?
+                .broadcast_as(&[batch_size, self.num_key_value_heads, num_groups, seq_len, self.head_dim])?
+                .reshape(&[batch_size, self.num_heads, seq_len, self.head_dim])?;
+            (k_rep, v_rep)
+        } else {
+            (k_with_rope, v_reshaped)
+        };
+
+        // 4. Scaled dot-product attention
+        // scores = Q @ K^T / sqrt(head_dim)
+        // [batch, heads, seq, head_dim] @ [batch, heads, head_dim, seq] -> [batch, heads, seq, seq]
+        let k_t = k_expanded.transpose(2, 3)?;  // [batch, heads, head_dim, seq]
+
+        // Make tensors contiguous for matmul (required by candle)
+        let q_contiguous = q_with_rope.contiguous()?;
+        let k_contiguous = k_t.contiguous()?;
+
+        let scores = q_contiguous.matmul(&k_contiguous)?;
+        let scaled_scores = (scores * (self.scale as f64))?;
+
+        // Apply causal mask: prevent attending to future positions
+        // Create lower triangular mask (1s on and below diagonal, 0s above)
+        let device = scaled_scores.device();
+        let causal_mask = {
+            let mut mask_data = vec![0.0f32; seq_len * seq_len];
+            for i in 0..seq_len {
+                for j in 0..seq_len {
+                    if j > i {
+                        // Future position - mask out with large negative value
+                        mask_data[i * seq_len + j] = f32::NEG_INFINITY;
+                    }
+                }
+            }
+            candle_core::Tensor::from_vec(mask_data, &[1, 1, seq_len, seq_len], device)?
+        };
+
+        // Add mask to scores (broadcast over batch and heads)
+        let masked_scores = scaled_scores.broadcast_add(&causal_mask)?;
+
+        // Softmax over last dimension
+        let attention_weights = candle_nn::ops::softmax_last_dim(&masked_scores)?;
+
+        // Apply attention to values
+        // [batch, heads, seq, seq] @ [batch, heads, seq, head_dim] -> [batch, heads, seq, head_dim]
+        let v_contiguous = v_expanded.contiguous()?;
+        let attn_output = attention_weights.matmul(&v_contiguous)?;
+
+        // 5. Reshape back: [batch, heads, seq, head_dim] -> [batch, seq, heads * head_dim]
+        let attn_output = attn_output
+            .transpose(1, 2)?  // [batch, seq, heads, head_dim]
+            .reshape(&[batch_size, seq_len, self.num_heads * self.head_dim])?;
+
+        let attn_output = Tensor::from_candle(attn_output);
+
+        // 6. Output projection
         let output = ops_fn::matmul(&attn_output, &self.o_proj)?;
 
         Ok(output)
@@ -443,6 +722,7 @@ mod tests {
             intermediate_size: 256,
             num_hidden_layers: 1,
             num_attention_heads: 4,
+            num_key_value_heads: 4, // Must match num_attention_heads for standard attention
             ..Default::default()
         };
 
@@ -461,12 +741,24 @@ mod tests {
 
     #[test]
     fn test_llama_generation() {
-        let config = LlamaConfig::default();
+        // Use a small config for testing
+        // vocab_size must be >= basic tokenizer's vocab (~200 tokens)
+        let config = LlamaConfig {
+            vocab_size: 256,
+            hidden_size: 64,
+            intermediate_size: 256,
+            num_hidden_layers: 1,
+            num_attention_heads: 4,
+            num_key_value_heads: 4,
+            ..Default::default()
+        };
         let model = LlamaModelV2::new(config).unwrap();
-        let gen_config = GenerationConfig::default();
+        let gen_config = GenerationConfig {
+            max_new_tokens: 5, // Generate only a few tokens for testing
+            ..Default::default()
+        };
 
-        let output = model.generate("Hello world", &gen_config).unwrap();
+        let output = model.generate("Hello", &gen_config).unwrap();
         assert!(!output.is_empty());
-        assert!(output.contains("Hello world"));
     }
 }

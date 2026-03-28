@@ -40,6 +40,9 @@ pub mod types;
 /// Simple observability
 pub mod simple_observability;
 
+/// Ollama registry client
+pub mod ollama;
+
 // === RE-EXPORTS ===
 
 pub use tensor_core::{Tensor, Device, DataType};

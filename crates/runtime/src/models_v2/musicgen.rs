@@ -1,0 +1,262 @@
+//! MusicGen Model V2 - Music Generation with EnCodec Tokens
+//!
+//! Decoder-only transformer for music generation
+
+use crate::model_config;
+use super::traits::*;
+use anyhow::Result;
+use serde::{Serialize, Deserialize};
+
+model_config!(MusicGenConfig {
+    vocab_size: usize = 2048,
+    hidden_size: usize = 1024,
+    intermediate_size: usize = 4096,
+    num_hidden_layers: usize = 24,
+    num_attention_heads: usize = 16,
+    num_key_value_heads: usize = 16,
+    max_position_embeddings: usize = 2048,
+    num_codebooks: usize = 4,
+    audio_channels: usize = 1,
+    sampling_rate: usize = 32000,
+    frame_rate: usize = 50,
+    layer_norm_eps: f32 = 1e-5,
+    hidden_dropout: f32 = 0.0,
+    pad_token_id: i64 = 2048,
+    bos_token_id: i64 = 2048,
+    eos_token_id: i64 = 2048,
+});
+
+impl MusicGenConfig {
+    pub fn from_gguf_config(gguf: &crate::weight_loader_core::GGUFModelConfig) -> Self {
+        Self {
+            hidden_size: gguf.hidden_size,
+            num_hidden_layers: gguf.num_hidden_layers,
+            num_attention_heads: gguf.num_attention_heads,
+            num_key_value_heads: gguf.num_key_value_heads,
+            ..Default::default()
+        }
+    }
+}
+
+pub struct MusicGenModelV2 {
+    config: MusicGenConfig,
+    device: Device,
+    embed_tokens: Vec<Tensor>,  // One embedding per codebook
+    layers: Vec<MusicGenDecoderLayer>,
+    norm: Tensor,
+    lm_heads: Vec<Tensor>,  // One head per codebook
+}
+
+pub struct MusicGenDecoderLayer {
+    self_attn_q: Tensor,
+    self_attn_k: Tensor,
+    self_attn_v: Tensor,
+    self_attn_o: Tensor,
+    gate_proj: Tensor,
+    up_proj: Tensor,
+    down_proj: Tensor,
+    input_layernorm: Tensor,
+    post_attention_layernorm: Tensor,
+    num_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+}
+
+impl Model for MusicGenModelV2 {
+    type Config = MusicGenConfig;
+
+    fn new(config: MusicGenConfig) -> Result<Self> {
+        let device = Device::CPU;
+
+        let mut embed_tokens = Vec::with_capacity(config.num_codebooks);
+        let mut lm_heads = Vec::with_capacity(config.num_codebooks);
+
+        for _ in 0..config.num_codebooks {
+            embed_tokens.push(ops_fn::zeros(&[config.vocab_size, config.hidden_size], DataType::Float32, &device)?);
+            lm_heads.push(ops_fn::zeros(&[config.hidden_size, config.vocab_size], DataType::Float32, &device)?);
+        }
+
+        let norm = ops_fn::zeros(&[config.hidden_size], DataType::Float32, &device)?;
+
+        let mut layers = Vec::with_capacity(config.num_hidden_layers);
+        for _ in 0..config.num_hidden_layers {
+            layers.push(MusicGenDecoderLayer::new(&config, &device)?);
+        }
+
+        Ok(Self { config, device, embed_tokens, layers, norm, lm_heads })
+    }
+
+    fn from_weights(config: MusicGenConfig, weights: ModelWeights) -> Result<Self> {
+        let mut model = Self::new(config)?;
+
+        for i in 0..model.config.num_codebooks {
+            if let Some(w) = weights.get(&format!("model.decoder.embed_tokens.{}.weight", i)) {
+                model.embed_tokens[i] = w.clone();
+            }
+            if let Some(w) = weights.get(&format!("lm_heads.{}.weight", i)) {
+                model.lm_heads[i] = ops_fn::transpose(w)?;
+            }
+        }
+
+        if let Some(w) = weights.get("model.decoder.final_layer_norm.weight") {
+            model.norm = w.clone();
+        }
+
+        Ok(model)
+    }
+
+    fn forward(&self, inputs: &ModelInputs) -> Result<ModelOutputs> {
+        match inputs {
+            ModelInputs::Text { input_ids, .. } => {
+                // For simplicity, use first codebook embedding
+                let mut hidden = ops_fn::embedding(input_ids, &self.embed_tokens[0])?;
+
+                for layer in &self.layers {
+                    hidden = layer.forward(&hidden)?;
+                }
+
+                hidden = ops_fn::layer_norm(&hidden, &self.norm, None, self.config.layer_norm_eps)?;
+
+                // Output from first codebook head
+                let logits = ops_fn::matmul(&hidden, &self.lm_heads[0])?;
+
+                Ok(ModelOutputs::Logits { logits, hidden_states: None })
+            }
+            _ => Err(anyhow::anyhow!("MusicGen requires token input")),
+        }
+    }
+
+    fn generate(&self, prompt: &str, config: &GenerationConfig) -> Result<String> {
+        use crate::tokenizer::Tokenizer;
+        use rand::Rng;
+
+        let tokenizer = Tokenizer::new();
+        let mut tokens: Vec<u32> = tokenizer.encode(prompt);
+
+        for _ in 0..config.max_new_tokens {
+            let input_ids = Tensor::from_i64_slice(&tokens.iter().map(|&t| t as i64).collect::<Vec<_>>(), &[1, tokens.len()], &self.device)?;
+            let outputs = self.forward(&ModelInputs::text(input_ids))?;
+
+            let logits = match outputs { ModelOutputs::Logits { logits, .. } => logits, _ => return Err(anyhow::anyhow!("Expected logits")) };
+            let logits_vec: Vec<f32> = logits.to_candle()?.flatten_all()?.to_vec1()?;
+            let start = (tokens.len() - 1) * self.config.vocab_size;
+
+            let next_token = if config.do_sample && config.temperature > 0.0 {
+                let scaled: Vec<f32> = logits_vec[start..start + self.config.vocab_size].iter()
+                    .map(|&x| x / config.temperature).collect();
+                let max_val = scaled.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let exp_sum: f32 = scaled.iter().map(|&x| (x - max_val).exp()).sum();
+                let probs: Vec<f32> = scaled.iter().map(|&x| (x - max_val).exp() / exp_sum).collect();
+
+                let mut rng = rand::thread_rng();
+                let r: f32 = rng.gen();
+                let mut cum = 0.0;
+                let mut s = 0u32;
+                for (i, &p) in probs.iter().enumerate() { cum += p; if r <= cum { s = i as u32; break; } }
+                s
+            } else {
+                logits_vec[start..start + self.config.vocab_size].iter()
+                    .enumerate().max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap()).map(|(i, _)| i as u32).unwrap_or(0)
+            };
+
+            if next_token == config.eos_token_id { break; }
+            tokens.push(next_token);
+        }
+
+        Ok(tokenizer.decode(&tokens))
+    }
+
+    fn config(&self) -> &Self::Config { &self.config }
+
+    fn memory_requirements(&self) -> MemoryRequirements {
+        let p = (self.config.vocab_size * self.config.hidden_size * self.config.num_codebooks +
+            self.config.hidden_size * self.config.hidden_size * 4 * self.config.num_hidden_layers) * 4;
+        MemoryRequirements { gpu_memory: p, cpu_memory: p / 4, kv_cache_memory: p / 8, peak_memory: p * 2 }
+    }
+
+    fn to_device(&mut self, device: &Device) -> Result<()> {
+        self.device = device.clone();
+        self.norm = self.norm.to_device(device)?;
+        for e in &mut self.embed_tokens { *e = e.to_device(device)?; }
+        for h in &mut self.lm_heads { *h = h.to_device(device)?; }
+        Ok(())
+    }
+}
+
+impl MusicGenDecoderLayer {
+    fn new(config: &MusicGenConfig, device: &Device) -> Result<Self> {
+        let head_dim = config.hidden_size / config.num_attention_heads;
+
+        Ok(Self {
+            self_attn_q: ops_fn::zeros(&[config.hidden_size, config.num_attention_heads * head_dim], DataType::Float32, device)?,
+            self_attn_k: ops_fn::zeros(&[config.hidden_size, config.num_key_value_heads * head_dim], DataType::Float32, device)?,
+            self_attn_v: ops_fn::zeros(&[config.hidden_size, config.num_key_value_heads * head_dim], DataType::Float32, device)?,
+            self_attn_o: ops_fn::zeros(&[config.num_attention_heads * head_dim, config.hidden_size], DataType::Float32, device)?,
+            gate_proj: ops_fn::zeros(&[config.hidden_size, config.intermediate_size], DataType::Float32, device)?,
+            up_proj: ops_fn::zeros(&[config.hidden_size, config.intermediate_size], DataType::Float32, device)?,
+            down_proj: ops_fn::zeros(&[config.intermediate_size, config.hidden_size], DataType::Float32, device)?,
+            input_layernorm: ops_fn::zeros(&[config.hidden_size], DataType::Float32, device)?,
+            post_attention_layernorm: ops_fn::zeros(&[config.hidden_size], DataType::Float32, device)?,
+            num_heads: config.num_attention_heads,
+            num_kv_heads: config.num_key_value_heads,
+            head_dim,
+        })
+    }
+
+    fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
+        let shape = hidden_states.shape();
+        let (batch_size, seq_len, _) = (shape[0], shape[1], shape[2]);
+
+        let residual = hidden_states.clone();
+        let hidden = ops_fn::layer_norm(hidden_states, &self.input_layernorm, None, 1e-5)?;
+
+        let q = ops_fn::matmul(&hidden, &self.self_attn_q)?.to_candle()?
+            .reshape(&[batch_size, seq_len, self.num_heads, self.head_dim])?.transpose(1, 2)?;
+        let k = ops_fn::matmul(&hidden, &self.self_attn_k)?.to_candle()?
+            .reshape(&[batch_size, seq_len, self.num_kv_heads, self.head_dim])?.transpose(1, 2)?;
+        let v = ops_fn::matmul(&hidden, &self.self_attn_v)?.to_candle()?
+            .reshape(&[batch_size, seq_len, self.num_kv_heads, self.head_dim])?.transpose(1, 2)?;
+
+        let num_groups = self.num_heads / self.num_kv_heads;
+        let (k, v) = if num_groups > 1 {
+            (k.unsqueeze(2)?.broadcast_as(&[batch_size, self.num_kv_heads, num_groups, seq_len, self.head_dim])?.reshape(&[batch_size, self.num_heads, seq_len, self.head_dim])?,
+             v.unsqueeze(2)?.broadcast_as(&[batch_size, self.num_kv_heads, num_groups, seq_len, self.head_dim])?.reshape(&[batch_size, self.num_heads, seq_len, self.head_dim])?)
+        } else { (k, v) };
+
+        let scale = (self.head_dim as f32).powf(-0.5);
+        let scores = (q.contiguous()?.matmul(&k.transpose(2, 3)?.contiguous()?)? * (scale as f64))?;
+
+        let device = scores.device();
+        let mask = { let mut m = vec![0.0f32; seq_len * seq_len]; for i in 0..seq_len { for j in (i+1)..seq_len { m[i*seq_len+j] = f32::NEG_INFINITY; } } candle_core::Tensor::from_vec(m, &[1,1,seq_len,seq_len], device)? };
+        let attn = candle_nn::ops::softmax_last_dim(&scores.broadcast_add(&mask)?)?.matmul(&v.contiguous()?)?
+            .transpose(1, 2)?.reshape(&[batch_size, seq_len, self.num_heads * self.head_dim])?;
+
+        let hidden = ops_fn::add(&residual, &ops_fn::matmul(&Tensor::from_candle(attn), &self.self_attn_o)?)?;
+
+        let residual = hidden.clone();
+        let hidden = ops_fn::layer_norm(&hidden, &self.post_attention_layernorm, None, 1e-5)?;
+        let gate = ops_fn::silu(&ops_fn::matmul(&hidden, &self.gate_proj)?)?;
+        let up = ops_fn::matmul(&hidden, &self.up_proj)?;
+        ops_fn::add(&residual, &ops_fn::matmul(&ops_fn::mul(&gate, &up)?, &self.down_proj)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_musicgen_config() {
+        let config = MusicGenConfig::default();
+        assert_eq!(config.hidden_size, 1024);
+        assert_eq!(config.num_codebooks, 4);
+    }
+
+    #[test]
+    fn test_musicgen_forward() {
+        let config = MusicGenConfig { vocab_size: 100, hidden_size: 32, intermediate_size: 128, num_hidden_layers: 1, num_attention_heads: 2, num_key_value_heads: 2, num_codebooks: 2, ..Default::default() };
+        let model = MusicGenModelV2::new(config).unwrap();
+        let outputs = model.forward(&ModelInputs::text(ops_fn::zeros(&[1, 4], DataType::Int64, &Device::CPU).unwrap())).unwrap();
+        match outputs { ModelOutputs::Logits { logits, .. } => assert_eq!(logits.shape(), &[1, 4, 100]), _ => panic!() }
+    }
+}

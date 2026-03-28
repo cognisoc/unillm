@@ -52,7 +52,7 @@ pub enum Device {
 
 ### Layer 2: ModelCore - Universal Model Interface
 
-**Purpose**: Provides a single model interface that works for all 18+ supported architectures.
+**Purpose**: Provides a single model interface that works for all 47 supported architectures.
 
 **Key Components**:
 ```rust
@@ -145,7 +145,7 @@ pub struct ModelWeights {
 
 ## Model Implementation Pattern
 
-All 18 model families follow the same clean pattern:
+All 47 model architectures follow the same clean pattern:
 
 ```rust
 // 1. Define configuration with macro
@@ -188,27 +188,99 @@ impl Model for YourModelV2 {
 
 ## Supported Model Families
 
-All models use identical patterns:
+All 47 model architectures use identical patterns across 10 categories:
+
+### Core LLM Families
 
 | Family | Models | Status |
 |--------|--------|---------|
-| **Llama** | Llama, Llama2, Code Llama, Llama3 | Implemented |
-| **Qwen** | Qwen, Qwen1.5, Qwen2, QwenVL | Implemented |
+| **LLaMA** | LLaMA, LLaMA-2, LLaMA-3, Code Llama | Implemented |
+| **Qwen** | Qwen, Qwen-1.5, Qwen-2 | Implemented |
 | **Gemma** | Gemma-2B, Gemma-7B | Implemented |
 | **Phi** | Phi-1, Phi-1.5, Phi-2, Phi-3 | Implemented |
 | **DeepSeek** | DeepSeek-Coder, DeepSeek-Chat | Implemented |
+| **Mistral** | Mistral-7B | Implemented |
+| **Mixtral** | Mixtral-8x7B (MoE) | Implemented |
+
+### GPT Family
+
+| Family | Models | Status |
+|--------|--------|---------|
+| **GPT-2** | GPT-2 (all sizes) | Implemented |
+| **GPT-J** | GPT-J-6B | Implemented |
+| **GPT-NeoX** | GPT-NeoX-20B, Pythia | Implemented |
+| **OPT** | OPT (all sizes) | Implemented |
+| **BLOOM** | BLOOM, BLOOMZ | Implemented |
+| **MPT** | MPT-7B, MPT-30B | Implemented |
+
+### Code & Standard Decoders
+
+| Family | Models | Status |
+|--------|--------|---------|
+| **StarCoder** | StarCoder, StarCoder2 | Implemented |
+| **CodeLlama** | CodeLlama (all sizes) | Implemented |
+| **OLMo** | OLMo-7B | Implemented |
+| **Granite** | IBM Granite | Implemented |
+
+### Additional LLM Families
+
+| Family | Models | Status |
+|--------|--------|---------|
 | **Yi** | Yi-6B, Yi-34B, Yi-Chat, Yi-Coder | Implemented |
+| **Falcon** | Falcon-7B, Falcon-40B | Implemented |
 | **Baichuan** | Baichuan-7B, Baichuan-13B | Implemented |
 | **InternLM** | InternLM, InternLM2 | Implemented |
 | **ChatGLM** | ChatGLM-6B, ChatGLM2-6B, ChatGLM3 | Implemented |
-| **Falcon** | Falcon-7B, Falcon-40B | Implemented |
 | **BERT** | BERT, RoBERTa, DeBERTa | Implemented |
+
+### Specialized Architectures
+
+| Family | Models | Status |
+|--------|--------|---------|
 | **T5** | T5, UL2, Flan-T5 | Implemented |
 | **Whisper** | Whisper (all sizes) | Implemented |
 | **CLIP** | CLIP vision-language | Implemented |
 | **LLaVA** | LLaVA multimodal | Implemented |
 | **Mamba** | Mamba state-space models | Implemented |
 | **MiniCPM** | MiniCPM efficient models | Implemented |
+
+### MoE (Mixture of Experts) Models
+
+| Family | Models | Status |
+|--------|--------|---------|
+| **DeepSeek-MoE** | Fine-grained MoE with shared experts | Implemented |
+| **DBRX** | Databricks MoE | Implemented |
+| **Grok** | xAI MoE | Implemented |
+| **Arctic** | Snowflake dense+MoE hybrid | Implemented |
+| **Jamba** | Mamba + Attention + MoE hybrid | Implemented |
+
+### RWKV / Linear Attention
+
+| Family | Models | Status |
+|--------|--------|---------|
+| **RWKV-4** | Linear attention with time mixing | Implemented |
+| **RWKV-6** | Matrix-valued states, data-dependent decay | Implemented |
+| **RecurrentGemma** | Griffin architecture with RG-LRU | Implemented |
+
+### Vision-Language Models
+
+| Family | Models | Status |
+|--------|--------|---------|
+| **Qwen2-VL** | Qwen + 3D patch ViT | Implemented |
+| **Phi-3-Vision** | Phi-3 + CLIP | Implemented |
+| **InternVL** | InternLM + InternViT | Implemented |
+| **CogVLM** | Expert attention VLM | Implemented |
+| **Idefics** | Cross-attention VLM | Implemented |
+| **Florence** | Microsoft vision-language | Implemented |
+
+### Audio/Speech Models
+
+| Family | Models | Status |
+|--------|--------|---------|
+| **Wav2Vec2** | CNN + Transformer encoder | Implemented |
+| **HuBERT** | Self-supervised audio | Implemented |
+| **MusicGen** | Music generation with codebooks | Implemented |
+| **Encodec** | Neural audio codec | Implemented |
 
 ## System Architecture Diagram
 

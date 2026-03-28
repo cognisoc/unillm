@@ -136,10 +136,12 @@ impl Sampler {
     }
 
     fn sample_from_probabilities(&self, probabilities: &[f32]) -> ModelResult<u32> {
-        // Simple sampling using cumulative distribution
-        // In a real implementation, would use proper random number generation
+        use rand::Rng;
+
+        // Sample using cumulative distribution with actual randomness
+        let mut rng = rand::thread_rng();
+        let random_val: f32 = rng.gen();
         let mut cumulative = 0.0;
-        let random_val = 0.5; // Fixed "random" value for deterministic testing
 
         for (idx, &prob) in probabilities.iter().enumerate() {
             cumulative += prob;
@@ -236,20 +238,74 @@ impl InferencePipeline {
 
     /// Create input tensor from token sequence
     fn create_input_tensor(&self, tokens: &[u32]) -> ModelResult<Tensor> {
-        use crate::tensor_core::ops_fn;
+        // Convert tokens to i64 for the embedding layer
+        let tokens_i64: Vec<i64> = tokens.iter().map(|&t| t as i64).collect();
+        let shape = &[1, tokens.len()]; // batch_size=1, seq_len=tokens.len()
 
-        // Create a simple tensor for now - in real implementation would use proper data loading
-        let shape = vec![1, tokens.len()]; // batch_size=1, seq_len=tokens.len()
-        ops_fn::zeros(&shape, crate::tensor_core::DataType::Int64, &Device::CPU)
+        Tensor::from_i64_slice(&tokens_i64, shape, &Device::CPU)
             .map_err(|e| ModelError::ComputationFailed(format!("Failed to create input tensor: {}", e)))
     }
 
     /// Extract logits for the last token from the logits tensor
-    fn extract_last_token_logits(&self, _logits: &Tensor) -> ModelResult<Vec<f32>> {
-        // Simplified implementation - in reality would need proper tensor ops
-        // For now, return dummy logits
-        let vocab_size = self.model.config().vocab_size();
-        Ok(vec![0.1; vocab_size])
+    fn extract_last_token_logits(&self, logits: &Tensor) -> ModelResult<Vec<f32>> {
+        // logits shape is typically [batch_size, seq_len, vocab_size]
+        // We need to extract [vocab_size] for the last token
+
+        let shape = logits.shape();
+        if shape.len() < 2 {
+            return Err(ModelError::ComputationFailed(
+                format!("Logits tensor has unexpected shape: {:?}", shape)
+            ));
+        }
+
+        // Try to convert to Candle tensor and extract last token logits
+        let candle_logits = logits.to_candle()
+            .map_err(|e| ModelError::ComputationFailed(format!("Failed to convert logits: {}", e)))?;
+
+        // Get logits for the last token position
+        let vocab_size = if shape.len() == 3 {
+            shape[2]
+        } else if shape.len() == 2 {
+            shape[1]
+        } else {
+            return Err(ModelError::ComputationFailed(
+                format!("Unexpected logits shape: {:?}", shape)
+            ));
+        };
+
+        // Extract the last token's logits
+        // For shape [batch, seq, vocab], we want [0, -1, :] -> [vocab]
+        let last_logits = if shape.len() == 3 {
+            let seq_len = shape[1];
+            candle_logits
+                .narrow(1, seq_len - 1, 1)
+                .map_err(|e| ModelError::ComputationFailed(format!("Failed to narrow: {}", e)))?
+                .squeeze(1)
+                .map_err(|e| ModelError::ComputationFailed(format!("Failed to squeeze: {}", e)))?
+                .squeeze(0)
+                .map_err(|e| ModelError::ComputationFailed(format!("Failed to squeeze batch: {}", e)))?
+        } else {
+            // shape [seq, vocab]
+            let seq_len = shape[0];
+            candle_logits
+                .narrow(0, seq_len - 1, 1)
+                .map_err(|e| ModelError::ComputationFailed(format!("Failed to narrow: {}", e)))?
+                .squeeze(0)
+                .map_err(|e| ModelError::ComputationFailed(format!("Failed to squeeze: {}", e)))?
+        };
+
+        // Convert to Vec<f32>
+        let logits_vec: Vec<f32> = last_logits
+            .to_vec1()
+            .map_err(|e| ModelError::ComputationFailed(format!("Failed to convert to vec: {}", e)))?;
+
+        if logits_vec.len() != vocab_size {
+            return Err(ModelError::ComputationFailed(
+                format!("Logits size mismatch: got {}, expected {}", logits_vec.len(), vocab_size)
+            ));
+        }
+
+        Ok(logits_vec)
     }
 
     /// Get model configuration

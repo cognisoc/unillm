@@ -202,17 +202,39 @@ crates/runtime/src/
 ├── tensor_core.rs            # Tensor operations
 ├── model_core.rs             # Model abstractions
 ├── weight_loader_core.rs     # 💾 Weight loading
-├── models_v2/                # 📁 All model implementations
+├── models_v2/                # 📁 All 47 model implementations
 │   ├── mod.rs               # Model exports
-│   ├── llama.rs            # Llama family
+│   ├── llama.rs            # LLaMA family
 │   ├── qwen.rs             # Qwen family
 │   ├── gemma.rs            # Gemma family
-│   └── ...                 # 15+ other families
+│   ├── phi.rs              # Phi family
+│   ├── mistral.rs          # Mistral
+│   ├── mixtral.rs          # Mixtral MoE
+│   ├── gpt2.rs             # GPT-2
+│   ├── deepseek_moe.rs     # DeepSeek-MoE
+│   ├── rwkv4.rs            # RWKV-4 linear attention
+│   ├── qwen2_vl.rs         # Qwen2-VL vision-language
+│   ├── wav2vec2.rs         # Wav2Vec2 audio
+│   └── ...                 # 35+ other architectures
 ├── inference.rs              # Inference pipeline
 ├── tokenizer.rs              # Tokenization
 ├── sampler.rs                # 🎲 Sampling methods
 └── bin/                      # 🔨 Example binaries
 ```
+
+### Model Categories
+
+The `models_v2/` directory contains models organized by category:
+- **Core LLMs** (7): llama, qwen, gemma, phi, deepseek, mistral, mixtral
+- **GPT Family** (6): gpt2, gptj, gptneox, opt, bloom, mpt
+- **Code Models** (2): starcoder, codellama
+- **Standard Decoders** (2): olmo, granite
+- **Additional LLMs** (6): yi, falcon, baichuan, internlm, chatglm, bert
+- **Specialized** (6): t5, whisper, clip, llava, mamba, minicpm
+- **MoE Models** (5): deepseek_moe, dbrx, grok, arctic, jamba
+- **RWKV/Linear** (3): rwkv4, rwkv6, recurrent_gemma
+- **Vision-Language** (6): qwen2_vl, phi3_vision, internvl, cogvlm, idefics, florence
+- **Audio/Speech** (4): wav2vec2, hubert, musicgen, encodec
 
 ### Testing Your Changes
 

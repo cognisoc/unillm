@@ -88,6 +88,10 @@ bytes = "1.0"
 # Re-add candle for tensor operations
 candle-transformers = "0.8"
 
+# Tokenization (HuggingFace tokenizers)
+tokenizers = "0.20"
+glob = "0.3"
+
 # Note: Tensor operations now supported for multimodal processing
 
 # Additional dependencies for production server

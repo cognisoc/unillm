@@ -108,6 +108,13 @@ pub enum ModelOutputs {
         encoder_hidden_states: Option<Tensor>,
         decoder_hidden_states: Option<Tensor>,
     },
+    /// CLIP contrastive outputs
+    CLIP {
+        logits_per_text: Tensor,
+        logits_per_image: Tensor,
+        text_embeds: Tensor,
+        image_embeds: Tensor,
+    },
 }
 
 /// Model weights container
@@ -117,6 +124,10 @@ pub struct ModelWeights {
     pub tensors: HashMap<String, Tensor>,
     /// Metadata
     pub metadata: WeightMetadata,
+    /// GGUF-specific config (populated when loading from GGUF)
+    pub gguf_config: Option<crate::weight_loader_core::GGUFModelConfig>,
+    /// GGUF tokenizer data (populated when loading from GGUF)
+    pub gguf_tokenizer: Option<crate::weight_loader_core::GGUFTokenizer>,
 }
 
 /// Weight metadata
@@ -334,7 +345,26 @@ impl ModelOutputs {
 impl ModelWeights {
     /// Create new model weights
     pub fn new(tensors: HashMap<String, Tensor>, metadata: WeightMetadata) -> Self {
-        Self { tensors, metadata }
+        Self { tensors, metadata, gguf_config: None, gguf_tokenizer: None }
+    }
+
+    /// Create new model weights with GGUF config
+    pub fn with_gguf_config(
+        tensors: HashMap<String, Tensor>,
+        metadata: WeightMetadata,
+        gguf_config: crate::weight_loader_core::GGUFModelConfig,
+    ) -> Self {
+        Self { tensors, metadata, gguf_config: Some(gguf_config), gguf_tokenizer: None }
+    }
+
+    /// Create new model weights with GGUF config and tokenizer
+    pub fn with_gguf_config_and_tokenizer(
+        tensors: HashMap<String, Tensor>,
+        metadata: WeightMetadata,
+        gguf_config: crate::weight_loader_core::GGUFModelConfig,
+        gguf_tokenizer: Option<crate::weight_loader_core::GGUFTokenizer>,
+    ) -> Self {
+        Self { tensors, metadata, gguf_config: Some(gguf_config), gguf_tokenizer }
     }
 
     /// Get tensor by name
@@ -361,6 +391,211 @@ impl ModelWeights {
         Ok(())
     }
 }
+
+// ============================================================================
+// Mixture of Experts (MoE) Support
+// ============================================================================
+
+/// MLP trait for expert networks in MoE layers
+pub trait MLPLayer: Send + Sync {
+    /// Forward pass through the MLP
+    fn forward(&self, hidden_states: &Tensor) -> Result<Tensor>;
+}
+
+/// Configuration for MoE layer
+#[derive(Debug, Clone)]
+pub struct MoEConfig {
+    /// Number of experts
+    pub num_experts: usize,
+    /// Number of experts activated per token
+    pub num_experts_per_tok: usize,
+    /// Whether to use auxiliary load balancing loss
+    pub aux_loss: bool,
+    /// Router type (softmax, top-k, etc.)
+    pub router_type: RouterType,
+}
+
+impl Default for MoEConfig {
+    fn default() -> Self {
+        Self {
+            num_experts: 8,
+            num_experts_per_tok: 2,
+            aux_loss: true,
+            router_type: RouterType::TopK,
+        }
+    }
+}
+
+/// Router types for MoE
+#[derive(Debug, Clone)]
+pub enum RouterType {
+    /// Standard top-k routing
+    TopK,
+    /// Expert choice routing (each expert chooses tokens)
+    ExpertChoice,
+    /// Soft routing with weighted combination
+    Soft,
+}
+
+/// Mixture of Experts layer
+/// Routes tokens to top-k experts and combines their outputs
+#[derive(Debug)]
+pub struct MoELayer {
+    /// Router weights: [hidden_size, num_experts]
+    pub router_weights: Tensor,
+    /// Number of experts
+    pub num_experts: usize,
+    /// Number of experts per token
+    pub num_experts_per_tok: usize,
+    /// Device
+    pub device: Device,
+}
+
+impl MoELayer {
+    /// Create new MoE layer
+    pub fn new(
+        router_weights: Tensor,
+        num_experts: usize,
+        num_experts_per_tok: usize,
+        device: Device,
+    ) -> Self {
+        Self {
+            router_weights,
+            num_experts,
+            num_experts_per_tok,
+            device,
+        }
+    }
+
+    /// Compute routing weights and indices for each token
+    /// Returns (routing_weights, expert_indices) where:
+    /// - routing_weights: [batch * seq_len, num_experts_per_tok] - normalized weights
+    /// - expert_indices: [batch * seq_len, num_experts_per_tok] - expert indices
+    pub fn route(&self, hidden_states: &Tensor) -> Result<(Tensor, Tensor)> {
+        use crate::tensor_core::ops_fn;
+
+        // hidden_states: [batch, seq_len, hidden_size]
+        let shape = hidden_states.shape();
+        let (batch, seq_len, _hidden_size) = (shape[0], shape[1], shape[2]);
+        let num_tokens = batch * seq_len;
+
+        // Reshape to [batch * seq_len, hidden_size]
+        let flat_hidden = hidden_states.reshape(&[num_tokens, shape[2]])?;
+
+        // Compute router logits: [batch * seq_len, num_experts]
+        let router_logits = ops_fn::matmul(&flat_hidden, &self.router_weights)?;
+
+        // Get top-k experts
+        let (topk_weights, topk_indices) = ops_fn::topk(&router_logits, self.num_experts_per_tok, -1)?;
+
+        // Softmax over the selected experts to get normalized weights
+        let routing_weights = ops_fn::softmax(&topk_weights, -1)?;
+
+        Ok((routing_weights, topk_indices))
+    }
+
+    /// Forward pass through MoE layer
+    /// expert_fn: function that takes (hidden_states, expert_idx) and returns expert output
+    pub fn forward_with_experts<F>(&self, hidden_states: &Tensor, expert_fn: F) -> Result<Tensor>
+    where
+        F: Fn(&Tensor, usize) -> Result<Tensor>,
+    {
+        use crate::tensor_core::ops_fn;
+
+        let shape = hidden_states.shape();
+        let (batch, seq_len, hidden_size) = (shape[0], shape[1], shape[2]);
+        let num_tokens = batch * seq_len;
+
+        // Get routing weights and indices
+        let (routing_weights, expert_indices) = self.route(hidden_states)?;
+
+        // Flatten hidden states for processing
+        let flat_hidden = hidden_states.reshape(&[num_tokens, hidden_size])?;
+
+        // Initialize output tensor
+        let mut output = ops_fn::zeros(&[num_tokens, hidden_size], hidden_states.dtype(), &self.device)?;
+
+        // Process each expert
+        // This is a basic implementation - production would batch tokens by expert
+        for expert_idx in 0..self.num_experts {
+            // Find tokens routed to this expert
+            // For each position in top-k, check if it matches this expert
+            let expert_indices_candle = expert_indices.to_candle()?;
+            let routing_weights_candle = routing_weights.to_candle()?;
+
+            for tok_idx in 0..num_tokens {
+                for k in 0..self.num_experts_per_tok {
+                    let idx_val: Vec<i64> = expert_indices_candle.get(tok_idx)?.to_vec1()?;
+                    if idx_val[k] as usize == expert_idx {
+                        // Get this token's hidden state
+                        let token_hidden = flat_hidden.to_candle()?.get(tok_idx)?;
+                        let token_tensor = Tensor::from_candle(token_hidden.unsqueeze(0)?);
+
+                        // Get expert output
+                        let expert_output = expert_fn(&token_tensor, expert_idx)?;
+
+                        // Get routing weight for this expert
+                        let weight_val: Vec<f32> = routing_weights_candle.get(tok_idx)?.to_vec1()?;
+                        let weight = weight_val[k];
+
+                        // Scale by routing weight and add to output
+                        let scaled_output = ops_fn::scale(&expert_output, weight)?;
+
+                        // Add to output at this position
+                        let output_candle = output.to_candle()?;
+                        let current = output_candle.get(tok_idx)?;
+                        let new_val = (current + scaled_output.to_candle()?.squeeze(0)?)?;
+
+                        // Update output tensor at this position
+                        // This is inefficient but works for the basic implementation
+                        let mut output_data: Vec<f32> = output.to_candle()?.flatten_all()?.to_vec1()?;
+                        let new_data: Vec<f32> = new_val.to_vec1()?;
+                        for (i, v) in new_data.iter().enumerate() {
+                            output_data[tok_idx * hidden_size + i] = *v;
+                        }
+                        output = Tensor::from_f32_slice(&output_data, &[num_tokens, hidden_size], &self.device)?;
+                    }
+                }
+            }
+        }
+
+        // Reshape back to [batch, seq_len, hidden_size]
+        output.reshape(&[batch, seq_len, hidden_size])
+    }
+}
+
+/// Helper struct for a standard MoE expert (simple MLP)
+#[derive(Debug)]
+pub struct MoEExpert {
+    /// Gate projection: hidden_size -> intermediate_size
+    pub gate_proj: Tensor,
+    /// Up projection: hidden_size -> intermediate_size
+    pub up_proj: Tensor,
+    /// Down projection: intermediate_size -> hidden_size
+    pub down_proj: Tensor,
+}
+
+impl MoEExpert {
+    pub fn new(gate_proj: Tensor, up_proj: Tensor, down_proj: Tensor) -> Self {
+        Self { gate_proj, up_proj, down_proj }
+    }
+
+    /// Forward pass: SwiGLU activation
+    pub fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
+        use crate::tensor_core::ops_fn;
+
+        // SwiGLU: down(silu(gate(x)) * up(x))
+        let gate = ops_fn::matmul(hidden_states, &self.gate_proj)?;
+        let gate_activated = ops_fn::silu(&gate)?;
+        let up = ops_fn::matmul(hidden_states, &self.up_proj)?;
+        let gated = ops_fn::mul(&gate_activated, &up)?;
+        ops_fn::matmul(&gated, &self.down_proj)
+    }
+}
+
+// ============================================================================
+// Model Configuration Macro
+// ============================================================================
 
 /// Helper macro for creating model configurations
 #[macro_export]

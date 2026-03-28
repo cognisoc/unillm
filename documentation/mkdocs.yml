@@ -1,0 +1,103 @@
+site_name: UniLLM Documentation
+site_description: High-performance Rust-based LLM inference engine with solid abstractions
+site_url: https://unillm.dev
+repo_url: https://github.com/anthropics/unillm
+repo_name: unillm
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+  - admonition
+  - tables
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/anthropics/unillm
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - getting-started/index.md
+    - Installation: getting-started/installation.md
+    - Your First Model: getting-started/first-model.md
+  - User Guide:
+    - user-guide/index.md
+    - Loading Models: user-guide/loading-models.md
+    - Running Inference: user-guide/inference.md
+    - Text Generation: user-guide/generation.md
+    - Configuration: user-guide/configuration.md
+  - Model Catalog:
+    - models/index.md
+    - LLMs:
+      - models/llm/llama.md
+      - models/llm/qwen.md
+      - models/llm/gemma.md
+      - models/llm/phi.md
+      - models/llm/mistral.md
+    - MoE Models:
+      - models/moe/mixtral.md
+      - models/moe/deepseek-moe.md
+      - models/moe/jamba.md
+    - Vision-Language:
+      - models/vision-language/llava.md
+      - models/vision-language/qwen2-vl.md
+      - models/vision-language/clip.md
+    - Audio:
+      - models/audio/whisper.md
+      - models/audio/wav2vec2.md
+  - API Reference:
+    - api-reference/index.md
+    - TensorCore: api-reference/tensor-core.md
+    - ModelCore: api-reference/model-core.md
+    - WeightLoader: api-reference/weight-loader.md
+    - Inference Pipeline: api-reference/inference.md
+  - Architecture:
+    - architecture/index.md
+    - Three-Layer System: architecture/three-layers.md
+    - Model Pattern: architecture/model-pattern.md
+    - Design Decisions: architecture/design-decisions.md
+  - Contributing:
+    - contributing/index.md
+    - Development Setup: contributing/development.md
+    - Adding Models: contributing/adding-models.md
+    - Code Style: contributing/code-style.md
