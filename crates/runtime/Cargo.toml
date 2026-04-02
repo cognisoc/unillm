@@ -8,6 +8,14 @@ default = []
 cuda = ["candle-core/cuda", "candle-nn/cuda"]
 metal = ["candle-core/metal", "candle-nn/metal"]
 gpu = ["cuda", "metal"]
+benchmark = ["llama-cpp-2"]
+# SIMD acceleration via BLAS backends
+accelerate = ["candle-core/accelerate", "candle-nn/accelerate"]  # macOS
+mkl = ["candle-core/mkl", "candle-nn/mkl"]                        # Intel
+# Native SIMD kernels for quantized inference (AVX2/AVX-512/NEON)
+simd = []
+# Performance meta-feature combining BLAS + optimizations
+performance = ["simd"]
 
 [dependencies]
 # Basic model loading
@@ -78,6 +86,11 @@ sysinfo = "0.32"
 # Byte manipulation for tensor loading
 bytemuck = "1.18"
 
+# Native SIMD support for quantized inference
+wide = "0.7"              # Portable SIMD abstractions
+aligned-vec = "0.6"       # Cache-aligned memory allocations
+rayon = "1.10"            # Parallel iteration for prefill
+
 # Multimodal processing dependencies
 image = { version = "0.25", features = ["png", "jpeg", "webp", "tiff"] }
 imageproc = "0.25"
@@ -104,3 +117,8 @@ nonzero_ext = "0.3"
 # rykv would be a custom key-value store (not available on crates.io)
 lz4 = "1.24"
 bincode = "1.3"
+
+# Benchmark comparison with llama.cpp
+llama-cpp-2 = { version = "0.1", optional = true }
+prettytable-rs = "0.10"
+clap = { version = "4.0", features = ["derive"] }

@@ -32,6 +32,16 @@ pub mod inference;
 /// Sampling and decoding
 pub mod sampler;
 
+/// KV cache for efficient autoregressive generation
+pub mod kv_cache;
+
+/// Precomputed static tensors for performance (RoPE, causal masks)
+pub mod precompute;
+
+/// Native SIMD kernels for quantized inference
+#[cfg(feature = "simd")]
+pub mod simd;
+
 // === UTILITIES ===
 
 /// Type definitions
@@ -43,11 +53,19 @@ pub mod simple_observability;
 /// Ollama registry client
 pub mod ollama;
 
+/// Benchmark comparison module
+pub mod benchmark;
+
 // === RE-EXPORTS ===
 
 pub use tensor_core::{Tensor, Device, DataType};
 pub use model_core::{Model, ModelInputs, ModelOutputs, GenerationConfig, MemoryRequirements, ModelWeights};
 pub use weight_loader_core::{WeightLoader};
+pub use kv_cache::{KVCache, LayerKVCache};
+pub use precompute::{RoPECache, CausalMaskCache, SlidingWindowMaskCache};
+
+#[cfg(feature = "simd")]
+pub use simd::{get_simd_backend, init_simd_backend, cpu_features, SimdBackend};
 
 /// Main runtime instance
 pub struct Runtime {

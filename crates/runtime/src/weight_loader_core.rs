@@ -12,6 +12,7 @@ use anyhow::{Result, anyhow};
 use serde_json::Value;
 use safetensors::SafeTensors;
 use candle_core::quantized::gguf_file;
+use candle_core::quantized::QMatMul;
 
 /// Configuration extracted from GGUF metadata
 #[derive(Debug, Clone, Default)]
@@ -463,6 +464,43 @@ impl WeightLoader for PyTorchWeightLoader {
     }
 }
 
+/// Create SIMD QuantizedTensor from a loaded QTensor
+///
+/// This extracts the raw quantized data from the QTensor and creates
+/// a SIMD-optimized QuantizedTensor for fast inference.
+#[cfg(feature = "simd")]
+fn create_simd_tensor_from_qtensor(
+    qtensor: &candle_core::quantized::QTensor,
+) -> Option<crate::simd::quant::QuantizedTensor> {
+    use crate::simd::quant::{QuantType, QuantizedTensor};
+    use candle_core::quantized::GgmlDType;
+
+    // Get the quantization type
+    let quant_type = match qtensor.dtype() {
+        GgmlDType::Q4_0 => QuantType::Q4_0,
+        GgmlDType::Q4K => QuantType::Q4_K,
+        _ => return None, // Unsupported quant type for SIMD
+    };
+
+    // Get tensor shape (should be 2D for weight matrices)
+    let shape = qtensor.shape();
+    if shape.dims().len() != 2 {
+        return None; // Only support 2D weight matrices
+    }
+    let rows = shape.dims()[0];
+    let cols = shape.dims()[1];
+
+    // Get raw data bytes from the QTensor
+    // Note: QTensor stores data as raw bytes internally
+    let data = match qtensor.data() {
+        Ok(cow) => cow.to_vec(),
+        Err(_) => return None,
+    };
+
+    // Create QuantizedTensor from raw data
+    Some(QuantizedTensor::new(data, quant_type, rows, cols))
+}
+
 impl WeightLoader for GGUFWeightLoader {
     fn load_weights(&self, path: &Path) -> Result<ModelWeights> {
         println!("Loading GGUF weights from: {}", path.display());
@@ -496,31 +534,62 @@ impl WeightLoader for GGUFWeightLoader {
         // Load tensors
         let device = candle_core::Device::Cpu;
         let mut tensors = HashMap::new();
+        let mut quantized_tensors: HashMap<String, Arc<QMatMul>> = HashMap::new();
+        #[cfg(feature = "simd")]
+        let mut simd_quantized: HashMap<String, Arc<crate::simd::quant::QuantizedTensor>> = HashMap::new();
         let mut total_params = 0usize;
+        let mut quantized_count = 0usize;
 
         for (name, tensor_info) in content.tensor_infos.iter() {
             // Read the quantized tensor
             let qtensor = tensor_info.read(&mut file, content.tensor_data_offset, &device)
                 .map_err(|e| anyhow!("Failed to read tensor '{}': {}", name, e))?;
 
-            // Dequantize to f32 for compatibility with our existing ops
-            let candle_tensor = qtensor.dequantize(&device)
-                .map_err(|e| anyhow!("Failed to dequantize tensor '{}': {}", name, e))?;
-
-            // Track parameters
-            total_params += candle_tensor.elem_count();
-
             // Convert GGUF tensor name to HuggingFace-style name
             let hf_name = gguf_to_hf_name(name);
 
-            // Wrap in our Tensor type using CandleStorage
-            let tensor = Tensor::from_candle(candle_tensor);
+            // Determine if this is a weight tensor that should stay quantized
+            // Quantize: q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj, lm_head
+            // Don't quantize: embeddings (frequent random access), norms (small 1D tensors)
+            let is_weight_tensor = hf_name.contains("_proj.weight") || hf_name.contains("lm_head.weight");
 
-            tensors.insert(hf_name, tensor);
+            if is_weight_tensor {
+                // Keep as QMatMul for efficient quantized inference - NO F32 fallback
+                // This saves memory by not storing dequantized version
+                let shape = qtensor.shape().clone();
+
+                // Create SIMD QuantizedTensor from loaded QTensor when simd feature is enabled
+                #[cfg(feature = "simd")]
+                {
+                    if let Some(simd_tensor) = create_simd_tensor_from_qtensor(&qtensor) {
+                        simd_quantized.insert(hf_name.clone(), Arc::new(simd_tensor));
+                    }
+                }
+
+                let qmatmul = QMatMul::from_arc(Arc::new(qtensor))
+                    .map_err(|e| anyhow!("Failed to create QMatMul for '{}': {}", name, e))?;
+                quantized_tensors.insert(hf_name.clone(), Arc::new(qmatmul));
+                quantized_count += 1;
+
+                // Estimate param count from shape (we don't store F32 tensor)
+                total_params += shape.elem_count();
+                // Don't insert into tensors map - quantized only!
+            } else {
+                // Embeddings, norms - dequantize to F32 (small, frequently accessed)
+                let candle_tensor = qtensor.dequantize(&device)
+                    .map_err(|e| anyhow!("Failed to dequantize tensor '{}': {}", name, e))?;
+                total_params += candle_tensor.elem_count();
+                let tensor = Tensor::from_candle(candle_tensor);
+                tensors.insert(hf_name, tensor);
+            }
         }
 
-        println!("Loaded {} tensors, {} total parameters",
-            tensors.len(), total_params);
+        #[cfg(feature = "simd")]
+        println!("Loaded {} F32 tensors + {} quantized weights + {} SIMD quantized, {} total parameters",
+            tensors.len(), quantized_count, simd_quantized.len(), total_params);
+        #[cfg(not(feature = "simd"))]
+        println!("Loaded {} F32 tensors + {} quantized weights, {} total parameters",
+            tensors.len(), quantized_count, total_params);
 
         let metadata = WeightMetadata {
             architecture: gguf_config.architecture.clone(),
@@ -529,7 +598,13 @@ impl WeightLoader for GGUFWeightLoader {
             dtype: "quantized".to_string(),
         };
 
-        Ok(ModelWeights::with_gguf_config_and_tokenizer(tensors, metadata, gguf_config, gguf_tokenizer))
+        #[cfg(feature = "simd")]
+        return Ok(ModelWeights::with_simd_quantized(
+            tensors, metadata, gguf_config, gguf_tokenizer, quantized_tensors, simd_quantized
+        ));
+
+        #[cfg(not(feature = "simd"))]
+        Ok(ModelWeights::with_quantized(tensors, metadata, gguf_config, gguf_tokenizer, quantized_tensors))
     }
 
     fn supports(&self, path: &Path) -> bool {

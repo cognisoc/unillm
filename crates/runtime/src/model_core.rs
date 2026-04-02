@@ -6,8 +6,10 @@
 
 use crate::tensor_core::{Tensor, Device};
 use std::collections::HashMap;
+use std::sync::Arc;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use candle_core::quantized::QMatMul;
 
 /// Core model trait - the single interface all models implement
 pub trait Model: Send + Sync {
@@ -118,9 +120,9 @@ pub enum ModelOutputs {
 }
 
 /// Model weights container
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ModelWeights {
-    /// Tensor weights by name
+    /// Tensor weights by name (F32 dequantized, for compatibility)
     pub tensors: HashMap<String, Tensor>,
     /// Metadata
     pub metadata: WeightMetadata,
@@ -128,6 +130,28 @@ pub struct ModelWeights {
     pub gguf_config: Option<crate::weight_loader_core::GGUFModelConfig>,
     /// GGUF tokenizer data (populated when loading from GGUF)
     pub gguf_tokenizer: Option<crate::weight_loader_core::GGUFTokenizer>,
+    /// Quantized weights (QMatMul) for efficient inference
+    pub quantized_tensors: HashMap<String, Arc<QMatMul>>,
+    /// Native SIMD quantized weights for maximum performance
+    #[cfg(feature = "simd")]
+    pub simd_quantized: HashMap<String, Arc<crate::simd::quant::QuantizedTensor>>,
+}
+
+impl std::fmt::Debug for ModelWeights {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_struct("ModelWeights");
+        debug
+            .field("tensors", &format!("{} tensors", self.tensors.len()))
+            .field("metadata", &self.metadata)
+            .field("gguf_config", &self.gguf_config)
+            .field("gguf_tokenizer", &self.gguf_tokenizer.as_ref().map(|_| "..."))
+            .field("quantized_tensors", &format!("{} quantized", self.quantized_tensors.len()));
+
+        #[cfg(feature = "simd")]
+        debug.field("simd_quantized", &format!("{} simd", self.simd_quantized.len()));
+
+        debug.finish()
+    }
 }
 
 /// Weight metadata
@@ -345,7 +369,15 @@ impl ModelOutputs {
 impl ModelWeights {
     /// Create new model weights
     pub fn new(tensors: HashMap<String, Tensor>, metadata: WeightMetadata) -> Self {
-        Self { tensors, metadata, gguf_config: None, gguf_tokenizer: None }
+        Self {
+            tensors,
+            metadata,
+            gguf_config: None,
+            gguf_tokenizer: None,
+            quantized_tensors: HashMap::new(),
+            #[cfg(feature = "simd")]
+            simd_quantized: HashMap::new(),
+        }
     }
 
     /// Create new model weights with GGUF config
@@ -354,7 +386,15 @@ impl ModelWeights {
         metadata: WeightMetadata,
         gguf_config: crate::weight_loader_core::GGUFModelConfig,
     ) -> Self {
-        Self { tensors, metadata, gguf_config: Some(gguf_config), gguf_tokenizer: None }
+        Self {
+            tensors,
+            metadata,
+            gguf_config: Some(gguf_config),
+            gguf_tokenizer: None,
+            quantized_tensors: HashMap::new(),
+            #[cfg(feature = "simd")]
+            simd_quantized: HashMap::new(),
+        }
     }
 
     /// Create new model weights with GGUF config and tokenizer
@@ -364,7 +404,54 @@ impl ModelWeights {
         gguf_config: crate::weight_loader_core::GGUFModelConfig,
         gguf_tokenizer: Option<crate::weight_loader_core::GGUFTokenizer>,
     ) -> Self {
-        Self { tensors, metadata, gguf_config: Some(gguf_config), gguf_tokenizer }
+        Self {
+            tensors,
+            metadata,
+            gguf_config: Some(gguf_config),
+            gguf_tokenizer,
+            quantized_tensors: HashMap::new(),
+            #[cfg(feature = "simd")]
+            simd_quantized: HashMap::new(),
+        }
+    }
+
+    /// Create new model weights with GGUF config, tokenizer, and quantized tensors
+    pub fn with_quantized(
+        tensors: HashMap<String, Tensor>,
+        metadata: WeightMetadata,
+        gguf_config: crate::weight_loader_core::GGUFModelConfig,
+        gguf_tokenizer: Option<crate::weight_loader_core::GGUFTokenizer>,
+        quantized_tensors: HashMap<String, Arc<QMatMul>>,
+    ) -> Self {
+        Self {
+            tensors,
+            metadata,
+            gguf_config: Some(gguf_config),
+            gguf_tokenizer,
+            quantized_tensors,
+            #[cfg(feature = "simd")]
+            simd_quantized: HashMap::new(),
+        }
+    }
+
+    /// Create new model weights with GGUF config, tokenizer, quantized tensors, and SIMD quantized
+    #[cfg(feature = "simd")]
+    pub fn with_simd_quantized(
+        tensors: HashMap<String, Tensor>,
+        metadata: WeightMetadata,
+        gguf_config: crate::weight_loader_core::GGUFModelConfig,
+        gguf_tokenizer: Option<crate::weight_loader_core::GGUFTokenizer>,
+        quantized_tensors: HashMap<String, Arc<QMatMul>>,
+        simd_quantized: HashMap<String, Arc<crate::simd::quant::QuantizedTensor>>,
+    ) -> Self {
+        Self {
+            tensors,
+            metadata,
+            gguf_config: Some(gguf_config),
+            gguf_tokenizer,
+            quantized_tensors,
+            simd_quantized,
+        }
     }
 
     /// Get tensor by name
@@ -376,6 +463,28 @@ impl ModelWeights {
     pub fn require(&self, name: &str) -> Result<&Tensor> {
         self.tensors.get(name)
             .ok_or_else(|| anyhow::anyhow!("Required tensor '{}' not found", name))
+    }
+
+    /// Get quantized tensor (QMatMul) by name
+    pub fn get_quantized(&self, name: &str) -> Option<Arc<QMatMul>> {
+        self.quantized_tensors.get(name).cloned()
+    }
+
+    /// Check if a tensor has a quantized version
+    pub fn has_quantized(&self, name: &str) -> bool {
+        self.quantized_tensors.contains_key(name)
+    }
+
+    /// Get SIMD quantized tensor by name
+    #[cfg(feature = "simd")]
+    pub fn get_simd_quantized(&self, name: &str) -> Option<Arc<crate::simd::quant::QuantizedTensor>> {
+        self.simd_quantized.get(name).cloned()
+    }
+
+    /// Check if a tensor has a SIMD quantized version
+    #[cfg(feature = "simd")]
+    pub fn has_simd_quantized(&self, name: &str) -> bool {
+        self.simd_quantized.contains_key(name)
     }
 
     /// Get all tensor names
