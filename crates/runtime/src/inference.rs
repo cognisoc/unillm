@@ -135,6 +135,89 @@ impl Sampler {
         Ok(exp_vals)
     }
 
+    /// Top-k sampling - keep only top k tokens by probability
+    pub fn sample_top_k(&self, logits: &[f32], top_k: usize, temperature: f32) -> ModelResult<u32> {
+        if logits.is_empty() {
+            return Err(ModelError::ComputationFailed("Empty logits".to_string()));
+        }
+
+        let scaled: Vec<f32> = logits.iter().map(|&x| x / temperature).collect();
+
+        // Find top-k indices
+        let mut indexed: Vec<(usize, f32)> = scaled.iter().enumerate().map(|(i, &v)| (i, v)).collect();
+        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        indexed.truncate(top_k);
+
+        // Softmax over top-k
+        let max_val = indexed[0].1;
+        let exp_sum: f32 = indexed.iter().map(|(_, v)| (v - max_val).exp()).sum();
+        let probs: Vec<(usize, f32)> = indexed
+            .iter()
+            .map(|&(i, v)| (i, (v - max_val).exp() / exp_sum))
+            .collect();
+
+        // Sample
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let r: f32 = rng.gen();
+        let mut cum = 0.0;
+        for (idx, prob) in &probs {
+            cum += prob;
+            if r <= cum {
+                return Ok(*idx as u32);
+            }
+        }
+        Ok(probs.last().unwrap().0 as u32)
+    }
+
+    /// Apply repetition penalty to logits in-place
+    pub fn apply_repetition_penalty(logits: &mut [f32], generated_tokens: &[u32], penalty: f32) {
+        if penalty == 1.0 {
+            return;
+        }
+        for &token_id in generated_tokens {
+            let idx = token_id as usize;
+            if idx < logits.len() {
+                if logits[idx] > 0.0 {
+                    logits[idx] /= penalty;
+                } else {
+                    logits[idx] *= penalty;
+                }
+            }
+        }
+    }
+
+    /// Combined sampling: applies repetition penalty, then samples using the
+    /// appropriate strategy based on config
+    pub fn sample_with_config(
+        &self,
+        logits: &[f32],
+        config: &crate::model_core::GenerationConfig,
+        generated_tokens: &[u32],
+    ) -> ModelResult<u32> {
+        let mut logits = logits.to_vec();
+
+        // Apply repetition penalty
+        Self::apply_repetition_penalty(&mut logits, generated_tokens, config.repetition_penalty);
+
+        // Choose sampling strategy
+        if !config.do_sample || config.temperature == 0.0 {
+            return self.sample_greedy(&logits);
+        }
+
+        if let Some(top_k) = config.top_k {
+            if top_k > 0 {
+                return self.sample_top_k(&logits, top_k, config.temperature);
+            }
+        }
+
+        if config.top_p < 1.0 {
+            return self.sample_top_p(&logits, config.top_p, config.temperature);
+        }
+
+        self.sample_temperature(&logits, config.temperature)
+    }
+
     fn sample_from_probabilities(&self, probabilities: &[f32]) -> ModelResult<u32> {
         use rand::Rng;
 

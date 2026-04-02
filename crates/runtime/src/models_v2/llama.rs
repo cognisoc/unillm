@@ -223,8 +223,8 @@ impl Model for LlamaModelV2 {
                     hidden_states = layer.forward(&hidden_states, attention_mask.as_ref(), self.config.rope_theta)?;
                 }
 
-                // 3. Final layer norm
-                hidden_states = ops_fn::layer_norm(&hidden_states, &self.norm, None, self.config.rms_norm_eps)?;
+                // 3. Final RMS norm
+                hidden_states = ops_fn::rms_norm(&hidden_states, &self.norm, self.config.rms_norm_eps)?;
 
                 // 4. Language modeling head (use quantized if available)
                 let logits = self.lm_head_forward(&hidden_states)?;
@@ -439,11 +439,12 @@ impl LlamaModelV2 {
                         layer_cache,
                         position_offset,
                         self.config.rope_theta,
+                        self.config.rms_norm_eps,
                     )?;
                 }
 
-                // 3. Final layer norm
-                hidden_states = ops_fn::layer_norm(&hidden_states, &self.norm, None, self.config.rms_norm_eps)?;
+                // 3. Final RMS norm (LLaMA uses RMS norm, not standard layer norm)
+                hidden_states = ops_fn::rms_norm(&hidden_states, &self.norm, self.config.rms_norm_eps)?;
 
                 // 4. Language modeling head (use quantized if available)
                 let logits = self.lm_head_forward(&hidden_states)?;
@@ -562,6 +563,101 @@ impl LlamaModelV2 {
         Ok(tokenizer.decode(&tokens))
     }
 
+    /// Generate text with KV caching and streaming callback.
+    /// Calls `callback(token_id, decoded_text)` for each generated token.
+    /// Callback returns `true` to continue, `false` to stop.
+    /// Returns generated token ids (excluding prompt).
+    pub fn generate_streaming_with_tokenizer(
+        &self,
+        tokenizer: &crate::tokenizer::Tokenizer,
+        prompt_tokens: &[u32],
+        config: &GenerationConfig,
+        callback: &mut dyn FnMut(u32, &str) -> bool,
+    ) -> Result<Vec<u32>> {
+        let sampler = crate::inference::Sampler::new();
+        let mut generated = Vec::new();
+
+        // Initialize KV cache
+        let mut cache = KVCache::new(self.config.num_hidden_layers);
+
+        // PREFILL: Process entire prompt at once
+        let prompt_i64: Vec<i64> = prompt_tokens.iter().map(|&t| t as i64).collect();
+        let prompt_tensor = Tensor::from_i64_slice(&prompt_i64, &[1, prompt_tokens.len()], &self.device)?;
+        let prompt_inputs = ModelInputs::Text {
+            input_ids: prompt_tensor,
+            attention_mask: None,
+            position_ids: None,
+        };
+
+        let outputs = self.forward_with_cache(&prompt_inputs, Some(&mut cache))?;
+        let logits = match outputs {
+            ModelOutputs::Logits { logits, .. } => logits,
+            _ => return Err(anyhow::anyhow!("Expected logits output")),
+        };
+
+        // Sample first token from prefill
+        let logits_candle = logits.to_candle()?;
+        let shape = logits_candle.dims();
+        let seq_len = if shape.len() == 3 { shape[1] } else { shape[0] };
+        let last_logits = if shape.len() == 3 {
+            logits_candle.narrow(1, seq_len - 1, 1)?.squeeze(1)?.squeeze(0)?
+        } else {
+            logits_candle.narrow(0, seq_len - 1, 1)?.squeeze(0)?
+        };
+
+        let logits_vec: Vec<f32> = last_logits.to_vec1()?;
+        let mut next_token = sampler.sample_with_config(&logits_vec, config, &generated)?;
+
+        if next_token == config.eos_token_id {
+            return Ok(generated);
+        }
+
+        generated.push(next_token);
+        let text = tokenizer.decode_single(next_token);
+        if !callback(next_token, &text) {
+            return Ok(generated);
+        }
+
+        // DECODE: Generate tokens one at a time using cache
+        for _ in 1..config.max_new_tokens {
+            let input_tensor = Tensor::from_i64_slice(
+                &[next_token as i64],
+                &[1, 1],
+                &self.device,
+            )?;
+
+            let inputs = ModelInputs::Text {
+                input_ids: input_tensor,
+                attention_mask: None,
+                position_ids: None,
+            };
+
+            let outputs = self.forward_with_cache(&inputs, Some(&mut cache))?;
+            let logits = match outputs {
+                ModelOutputs::Logits { logits, .. } => logits,
+                _ => return Err(anyhow::anyhow!("Expected logits output")),
+            };
+
+            let logits_candle = logits.to_candle()?;
+            let last_logits = logits_candle.squeeze(0)?.squeeze(0)?;
+            let logits_vec: Vec<f32> = last_logits.to_vec1()?;
+
+            next_token = sampler.sample_with_config(&logits_vec, config, &generated)?;
+
+            if next_token == config.eos_token_id {
+                break;
+            }
+
+            generated.push(next_token);
+            let text = tokenizer.decode_single(next_token);
+            if !callback(next_token, &text) {
+                break;
+            }
+        }
+
+        Ok(generated)
+    }
+
     /// Sample a token from logits vector
     fn sample_token_from_logits(&self, logits: &candle_core::Tensor, config: &GenerationConfig) -> Result<u32> {
         use rand::Rng;
@@ -629,8 +725,8 @@ impl LlamaLayer {
     }
 
     fn forward(&self, hidden_states: &Tensor, attention_mask: Option<&Tensor>, rope_theta: f32) -> Result<Tensor> {
-        // 1. Pre-attention layer norm
-        let normed = ops_fn::layer_norm(hidden_states, &self.input_layernorm, None, 1e-6)?;
+        // 1. Pre-attention RMS norm (LLaMA uses RMS norm, NOT standard layer norm)
+        let normed = ops_fn::rms_norm(hidden_states, &self.input_layernorm, 1e-5)?;
 
         // 2. Self attention (with RoPE)
         let attn_output = self.self_attn.forward(&normed, attention_mask, rope_theta)?;
@@ -638,8 +734,8 @@ impl LlamaLayer {
         // 3. Residual connection
         let hidden_states = ops_fn::add(hidden_states, &attn_output)?;
 
-        // 4. Pre-MLP layer norm
-        let normed = ops_fn::layer_norm(&hidden_states, &self.post_attention_layernorm, None, 1e-6)?;
+        // 4. Pre-MLP RMS norm
+        let normed = ops_fn::rms_norm(&hidden_states, &self.post_attention_layernorm, 1e-5)?;
 
         // 5. MLP
         let mlp_output = self.mlp.forward(&normed)?;
@@ -657,9 +753,10 @@ impl LlamaLayer {
         cache: Option<&mut LayerKVCache>,
         position_offset: usize,
         rope_theta: f32,
+        rms_norm_eps: f32,
     ) -> Result<Tensor> {
-        // 1. Pre-attention layer norm
-        let normed = ops_fn::layer_norm(hidden_states, &self.input_layernorm, None, 1e-6)?;
+        // 1. Pre-attention RMS norm (LLaMA uses RMS norm, NOT standard layer norm)
+        let normed = ops_fn::rms_norm(hidden_states, &self.input_layernorm, rms_norm_eps)?;
 
         // 2. Self attention with cache
         let attn_output = self.self_attn.forward_with_cache(&normed, cache, position_offset, rope_theta)?;
@@ -667,8 +764,8 @@ impl LlamaLayer {
         // 3. Residual connection
         let hidden_states = ops_fn::add(hidden_states, &attn_output)?;
 
-        // 4. Pre-MLP layer norm
-        let normed = ops_fn::layer_norm(&hidden_states, &self.post_attention_layernorm, None, 1e-6)?;
+        // 4. Pre-MLP RMS norm
+        let normed = ops_fn::rms_norm(&hidden_states, &self.post_attention_layernorm, rms_norm_eps)?;
 
         // 5. MLP (unchanged - no caching needed)
         let mlp_output = self.mlp.forward(&normed)?;

@@ -252,6 +252,18 @@ impl Tokenizer {
         }
     }
 
+    /// Decode a single token ID to text, preserving leading spaces.
+    /// This is meant for streaming output where tokens are decoded one at a time.
+    pub fn decode_single(&self, token_id: u32) -> String {
+        match &self.inner {
+            TokenizerBackend::HuggingFace(hf) => {
+                hf.decode(&[token_id], true).unwrap_or_default()
+            }
+            TokenizerBackend::Basic(basic) => basic.decode(&[token_id]),
+            TokenizerBackend::GGUF(gguf) => gguf.decode_single(token_id),
+        }
+    }
+
     /// Get special tokens
     pub fn special_tokens(&self) -> &SpecialTokens {
         &self.special_tokens
@@ -479,11 +491,15 @@ impl BasicTokenizer {
     }
 }
 
-/// GGUF-based tokenizer implementation
+/// GGUF-based tokenizer implementation with proper BPE encoding
 struct GGUFTokenizerImpl {
     tokens: Vec<String>,
     token_to_id: HashMap<String, u32>,
     id_to_token: HashMap<u32, String>,
+    /// BPE merge scores from GGUF metadata (lower = higher priority merge)
+    scores: Vec<f32>,
+    /// Precomputed merge scores: (token_a, token_b) -> (merged_token_id, score)
+    merge_map: HashMap<(u32, u32), (u32, f32)>,
     special_tokens: SpecialTokens,
     vocab_size: usize,
 }
@@ -508,11 +524,44 @@ impl GGUFTokenizerImpl {
         };
 
         let vocab_size = gguf_tokenizer.tokens.len();
+        let scores = gguf_tokenizer.scores.clone().unwrap_or_default();
+
+        // Build merge map: for each pair of tokens (a, b), check if their
+        // concatenation exists as a token. If so, record the merged token and its score.
+        let mut merge_map = HashMap::new();
+        for (merged_id, merged_token) in gguf_tokenizer.tokens.iter().enumerate() {
+            let merged_score = scores.get(merged_id).copied().unwrap_or(f32::MAX);
+            // Skip single-char tokens and special tokens (they can't be merges)
+            if merged_token.len() <= 1 {
+                continue;
+            }
+            // Try all possible splits of the merged token into (left, right)
+            let merged_bytes = merged_token.as_bytes();
+            for split_pos in 1..merged_bytes.len() {
+                if let (Ok(left), Ok(right)) = (
+                    std::str::from_utf8(&merged_bytes[..split_pos]),
+                    std::str::from_utf8(&merged_bytes[split_pos..]),
+                ) {
+                    if let (Some(&left_id), Some(&right_id)) =
+                        (token_to_id.get(left), token_to_id.get(right))
+                    {
+                        // Only keep the best (lowest score) merge for this pair
+                        let entry = merge_map.entry((left_id, right_id))
+                            .or_insert((merged_id as u32, merged_score));
+                        if merged_score < entry.1 {
+                            *entry = (merged_id as u32, merged_score);
+                        }
+                    }
+                }
+            }
+        }
 
         Self {
             tokens: gguf_tokenizer.tokens.clone(),
             token_to_id,
             id_to_token,
+            scores,
+            merge_map,
             special_tokens,
             vocab_size,
         }
@@ -527,58 +576,67 @@ impl GGUFTokenizerImpl {
 
     fn encode_raw(&self, text: &str) -> Vec<u32> {
         // SentencePiece uses ▁ (U+2581) to represent spaces
-        // We need to convert spaces to this character for proper tokenization
-        // The ▁ is prepended to tokens that follow a space (word boundaries)
         let processed = format!("▁{}", text.replace(' ', "▁"));
 
-        let mut result = Vec::new();
+        // Step 1: Initialize with character-level (or byte-level) tokens
+        let mut token_ids: Vec<u32> = Vec::new();
         let bytes = processed.as_bytes();
         let mut i = 0;
 
         while i < bytes.len() {
-            let mut matched = false;
+            // Try to match a single character (may be multi-byte UTF-8)
+            let char_len = utf8_char_len(bytes[i]);
+            let end = std::cmp::min(i + char_len, bytes.len());
 
-            // Try to match longest token first (greedy)
-            // Start with reasonable max length to avoid O(n^2)
-            let max_len = std::cmp::min(bytes.len() - i, 32);
-
-            for len in (1..=max_len).rev() {
-                if let Ok(substr) = std::str::from_utf8(&bytes[i..i + len]) {
-                    if let Some(&id) = self.token_to_id.get(substr) {
-                        result.push(id);
-                        i += len;
-                        matched = true;
-                        break;
-                    }
+            if let Ok(ch) = std::str::from_utf8(&bytes[i..end]) {
+                if let Some(&id) = self.token_to_id.get(ch) {
+                    token_ids.push(id);
+                    i = end;
+                    continue;
                 }
             }
 
-            if !matched {
-                // Try single byte as fallback
-                let byte = bytes[i];
+            // Byte-level fallback: <0xNN>
+            let byte_token = format!("<0x{:02X}>", bytes[i]);
+            if let Some(&id) = self.token_to_id.get(&byte_token) {
+                token_ids.push(id);
+            } else {
+                token_ids.push(self.special_tokens.unk_token_id);
+            }
+            i += 1;
+        }
 
-                // First try the character directly
-                if let Ok(ch) = std::str::from_utf8(&bytes[i..i + 1]) {
-                    if let Some(&id) = self.token_to_id.get(ch) {
-                        result.push(id);
-                        i += 1;
-                        continue;
+        // Step 2: BPE merge loop - repeatedly merge the highest-priority pair
+        if !self.merge_map.is_empty() {
+            loop {
+                if token_ids.len() < 2 {
+                    break;
+                }
+
+                // Find the best merge (lowest score) among all adjacent pairs
+                let mut best_merge: Option<(usize, u32, f32)> = None; // (position, merged_id, score)
+
+                for pos in 0..token_ids.len() - 1 {
+                    let pair = (token_ids[pos], token_ids[pos + 1]);
+                    if let Some(&(merged_id, score)) = self.merge_map.get(&pair) {
+                        if best_merge.is_none() || score < best_merge.unwrap().2 {
+                            best_merge = Some((pos, merged_id, score));
+                        }
                     }
                 }
 
-                // Try byte-level token format: <0xNN>
-                let byte_token = format!("<0x{:02X}>", byte);
-                if let Some(&id) = self.token_to_id.get(&byte_token) {
-                    result.push(id);
-                } else {
-                    // Unknown token
-                    result.push(self.special_tokens.unk_token_id);
+                match best_merge {
+                    Some((pos, merged_id, _)) => {
+                        // Apply the merge: replace pair at pos with merged token
+                        token_ids[pos] = merged_id;
+                        token_ids.remove(pos + 1);
+                    }
+                    None => break, // No more merges possible
                 }
-                i += 1;
             }
         }
 
-        result
+        token_ids
     }
 
     fn decode(&self, token_ids: &[u32]) -> String {
@@ -594,12 +652,15 @@ impl GGUFTokenizerImpl {
             }
 
             if let Some(token) = self.id_to_token.get(&id) {
-                result.push_str(token);
+                result.push_str(&Self::decode_token(token));
             }
         }
 
-        // Convert SentencePiece's ▁ back to spaces and trim leading space
-        result.replace('▁', " ").trim_start().to_string()
+        // Trim only the leading space that comes from the first ▁ in SentencePiece encoding
+        if result.starts_with(' ') {
+            result.remove(0);
+        }
+        result
     }
 
     fn decode_raw(&self, token_ids: &[u32]) -> String {
@@ -607,12 +668,42 @@ impl GGUFTokenizerImpl {
 
         for &id in token_ids {
             if let Some(token) = self.id_to_token.get(&id) {
-                result.push_str(token);
+                result.push_str(&Self::decode_token(token));
             }
         }
 
-        // Convert SentencePiece's ▁ back to spaces and trim leading space
-        result.replace('▁', " ").trim_start().to_string()
+        if result.starts_with(' ') {
+            result.remove(0);
+        }
+        result
+    }
+
+    /// Decode a single token ID to text, preserving leading spaces (for streaming)
+    fn decode_single(&self, token_id: u32) -> String {
+        if token_id == self.special_tokens.bos_token_id
+            || token_id == self.special_tokens.eos_token_id
+            || token_id == self.special_tokens.pad_token_id
+        {
+            return String::new();
+        }
+
+        if let Some(token) = self.id_to_token.get(&token_id) {
+            Self::decode_token(token)
+        } else {
+            String::new()
+        }
+    }
+
+    /// Decode a single token string: handle ▁→space and <0xNN>→byte conversions
+    fn decode_token(token: &str) -> String {
+        // Handle byte-level tokens: <0xNN> → actual byte
+        if token.starts_with("<0x") && token.ends_with('>') && token.len() == 6 {
+            if let Ok(byte) = u8::from_str_radix(&token[3..5], 16) {
+                return String::from(byte as char);
+            }
+        }
+        // Convert SentencePiece's ▁ to space
+        token.replace('▁', " ")
     }
 
     fn vocab_size(&self) -> usize {
@@ -680,6 +771,14 @@ impl BatchTokenizer {
             .map(|tokens| self.tokenizer.decode(tokens))
             .collect()
     }
+}
+
+/// Get the length of a UTF-8 character from its first byte
+fn utf8_char_len(first_byte: u8) -> usize {
+    if first_byte < 0x80 { 1 }
+    else if first_byte < 0xE0 { 2 }
+    else if first_byte < 0xF0 { 3 }
+    else { 4 }
 }
 
 #[cfg(test)]

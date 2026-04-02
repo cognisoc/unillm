@@ -56,10 +56,16 @@ pub mod ollama;
 /// Benchmark comparison module
 pub mod benchmark;
 
+/// OpenAI-compatible HTTP server
+pub mod server;
+
+/// Chat template rendering
+pub mod chat_template;
+
 // === RE-EXPORTS ===
 
 pub use tensor_core::{Tensor, Device, DataType};
-pub use model_core::{Model, ModelInputs, ModelOutputs, GenerationConfig, MemoryRequirements, ModelWeights};
+pub use model_core::{Model, ModelInputs, ModelOutputs, GenerationConfig, MemoryRequirements, ModelWeights, ModelRunner, GenerationMetrics};
 pub use weight_loader_core::{WeightLoader};
 pub use kv_cache::{KVCache, LayerKVCache};
 pub use precompute::{RoPECache, CausalMaskCache, SlidingWindowMaskCache};

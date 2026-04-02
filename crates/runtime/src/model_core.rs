@@ -219,6 +219,103 @@ pub struct MemoryRequirements {
     pub peak_memory: usize,
 }
 
+// ============================================================================
+// ModelRunner - Unified generation interface for CLI/server
+// ============================================================================
+
+/// Unified model runner trait for streaming generation across architectures.
+/// This is the interface used by the CLI binary and HTTP server.
+pub trait ModelRunner: Send + Sync {
+    /// Generate tokens with streaming callback.
+    /// Returns generated token ids (excluding prompt).
+    /// Callback receives (token_id, decoded_text) and returns true to continue.
+    fn generate_streaming(
+        &self,
+        tokens: &[u32],
+        config: &GenerationConfig,
+        callback: &mut dyn FnMut(u32, &str) -> bool,
+    ) -> Result<Vec<u32>>;
+
+    /// Get the model's EOS token ID
+    fn eos_token_id(&self) -> u32;
+
+    /// Get the architecture name
+    fn architecture(&self) -> &str;
+
+    /// Get the model's context size
+    fn context_size(&self) -> usize;
+}
+
+/// Performance metrics for a generation run
+#[derive(Debug, Clone)]
+pub struct GenerationMetrics {
+    /// Time to load model in milliseconds
+    pub model_load_ms: f64,
+    /// Number of prompt tokens processed
+    pub prompt_tokens: usize,
+    /// Time to process prompt (prefill) in milliseconds
+    pub prompt_eval_ms: f64,
+    /// Prompt evaluation speed
+    pub prompt_tokens_per_sec: f64,
+    /// Number of tokens generated
+    pub generated_tokens: usize,
+    /// Time to generate tokens (decode) in milliseconds
+    pub generation_ms: f64,
+    /// Generation speed
+    pub generation_tokens_per_sec: f64,
+    /// Total time in milliseconds
+    pub total_ms: f64,
+}
+
+impl GenerationMetrics {
+    pub fn new() -> Self {
+        Self {
+            model_load_ms: 0.0,
+            prompt_tokens: 0,
+            prompt_eval_ms: 0.0,
+            prompt_tokens_per_sec: 0.0,
+            generated_tokens: 0,
+            generation_ms: 0.0,
+            generation_tokens_per_sec: 0.0,
+            total_ms: 0.0,
+        }
+    }
+
+    /// Compute derived fields from raw timing data
+    pub fn finalize(&mut self) {
+        if self.prompt_eval_ms > 0.0 {
+            self.prompt_tokens_per_sec =
+                (self.prompt_tokens as f64) / (self.prompt_eval_ms / 1000.0);
+        }
+        if self.generation_ms > 0.0 {
+            self.generation_tokens_per_sec =
+                (self.generated_tokens as f64) / (self.generation_ms / 1000.0);
+        }
+        self.total_ms = self.model_load_ms + self.prompt_eval_ms + self.generation_ms;
+    }
+
+    /// Print metrics summary (llama.cpp style)
+    pub fn print_summary(&self) {
+        eprintln!();
+        eprintln!("Model load time:     {:>8.2} ms", self.model_load_ms);
+        eprintln!(
+            "Prompt eval:         {:>8.2} ms / {:>5} tokens ({:>8.2} tokens/s)",
+            self.prompt_eval_ms, self.prompt_tokens, self.prompt_tokens_per_sec
+        );
+        eprintln!(
+            "Generation:          {:>8.2} ms / {:>5} tokens ({:>8.2} tokens/s)",
+            self.generation_ms, self.generated_tokens, self.generation_tokens_per_sec
+        );
+        eprintln!("Total time:          {:>8.2} ms", self.total_ms);
+    }
+}
+
+impl Default for GenerationMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Model factory trait for creating models by name
 pub trait ModelFactory: Send + Sync {
     /// Create model from configuration
