@@ -12,7 +12,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Modular LLM inference runtime written in Rust"
 license = "Apache-2.0"
-repository = "https://github.com/Skelf-Research/unillm"
+repository = "https://github.com/cognisoc/unillm"
 keywords = ["llm", "inference", "rust", "machine-learning"]
 categories = ["science", "concurrency"]
 

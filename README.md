@@ -3,7 +3,7 @@
 **A modular LLM inference runtime written in Rust.**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![CI](https://github.com/Skelf-Research/unillm/actions/workflows/ci.yml/badge.svg)](https://github.com/Skelf-Research/unillm/actions/workflows/ci.yml)
+[![CI](https://github.com/cognisoc/unillm/actions/workflows/ci.yml/badge.svg)](https://github.com/cognisoc/unillm/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org)
 
 UniLLM provides a unified, type-safe interface for running large language models across 47 architectures. It is built around three composable abstractions -- TensorCore, ModelCore, and WeightLoaderCore -- that let you load weights in any format, run inference on any device, and add new model architectures with minimal boilerplate.
@@ -13,7 +13,7 @@ UniLLM provides a unified, type-safe interface for running large language models
 ## Quick Start
 
 ```bash
-git clone https://github.com/Skelf-Research/unillm.git
+git clone https://github.com/cognisoc/unillm.git
 cd unillm
 cargo check            # verify compilation
 cargo test --workspace # run all tests
