@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Hybrid KV cache (RadixAttention + PagedAttention) for UniLLM"
 license = "Apache-2.0"
-repository = "https://github.com/Skelf-Research/unillm"
+repository = "https://github.com/cognisoc/unillm"
 readme = "../../README.md"
 
 [dependencies]
