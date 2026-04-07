@@ -1,7 +1,7 @@
 site_name: UniLLM Documentation
 site_description: High-performance Rust-based LLM inference engine with solid abstractions
 site_url: https://unillm.dev
-repo_url: https://github.com/anthropics/unillm
+repo_url: https://github.com/Skelf-Research/unillm
 repo_name: unillm
 
 theme:
@@ -52,7 +52,7 @@ markdown_extensions:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/anthropics/unillm
+      link: https://github.com/Skelf-Research/unillm
 
 nav:
   - Home: index.md

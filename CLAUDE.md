@@ -102,7 +102,6 @@ impl Model for YourModelV2 {
 - **`crates/inference/`** - High-level inference engine components
 - **`crates/kv/`** - KV cache and memory management
 - **`crates/scheduler/`** - Request scheduling and batching
-- **`crates/kernels/`** - GPU kernels (temporarily disabled)
 
 ## Key Implementation Notes
 

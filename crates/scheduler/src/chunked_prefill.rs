@@ -172,8 +172,9 @@ impl ChunkedPrefillManager {
             
             self.stats.chunks_created += 1;
             
-            // Move to next chunk with overlap
-            start_pos = end_pos.saturating_sub(self.config.chunk_overlap);
+            // Move to next chunk with overlap, but always advance
+            let next_start = end_pos.saturating_sub(self.config.chunk_overlap);
+            start_pos = if next_start <= start_pos { end_pos } else { next_start };
             chunk_priority += 1;
         }
         

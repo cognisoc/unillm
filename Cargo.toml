@@ -2,50 +2,19 @@
 members = [
     "crates/kv",
     "crates/scheduler",
-    # "crates/kernels",    # Temporarily disabled due to compilation issues
     "crates/inference",
     "crates/runtime",
 ]
 resolver = "2"
 
-[workspace.dependencies]
-# Core dependencies
-tokio = { version = "1.0", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "1.0"
-anyhow = "1.0"
-async-trait = "0.1"
-futures = "0.3"
-uuid = { version = "1.0", features = ["v4"] }
-
-# System and performance
-libc = "0.2"
-nix = "0.27"
-perf-event = "0.4"
-
-# GPU and acceleration
-libloading = "0.8"
-
-# Template engines
-handlebars = "4.5"
-tera = "1.19"
-
-# Random generation
-rand = "0.8"
-
-# Utilities
-bytemuck = "1.0"
-
-# Package metadata (for workspace)
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "High-performance LLM inference engine with hybrid cache and GPU optimization"
+description = "Modular LLM inference runtime written in Rust"
 license = "Apache-2.0"
-repository = "https://github.com/unillm/unillm"
-keywords = ["llm", "inference", "gpu", "cache", "performance"]
-categories = ["science", "concurrency", "hardware-support"]
+repository = "https://github.com/Skelf-Research/unillm"
+keywords = ["llm", "inference", "rust", "machine-learning"]
+categories = ["science", "concurrency"]
 
 [profile.release]
 opt-level = 3
