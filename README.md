@@ -19,17 +19,17 @@ cargo check            # verify compilation
 cargo test --workspace # run all tests
 ```
 
-### Run inference with a model from Ollama
+### Run inference
 
 ```bash
-# Downloads TinyLlama and runs a basic generation
-cargo run --bin test_ollama -p runtime
-
-# List locally cached models
-cargo run --bin test_ollama -p runtime -- --list-cached
+# Generate text (downloads TinyLlama on first run, ~600MB)
+cargo run --bin unillm -p unillm-runtime -- generate --prompt "Explain gravity"
 
 # Use a different model
-cargo run --bin test_ollama -p runtime -- --model llama2:7b
+cargo run --bin unillm -p unillm-runtime -- generate --model llama2:7b --prompt "Hello"
+
+# List cached models
+cargo run --bin unillm -p unillm-runtime -- models
 ```
 
 ## Supported Models
@@ -93,7 +93,7 @@ docs/            Architecture docs, API reference, developer guide
 ```bash
 cargo check                       # type-check the workspace
 cargo test --workspace            # run all tests
-cargo test --lib -p runtime       # test the runtime crate
+cargo test --lib -p unillm-runtime # test the runtime crate
 cargo clippy --workspace          # lint
 cargo fmt --all                   # format
 cargo build --release             # optimized build
@@ -103,6 +103,7 @@ See [docs/developer_guide.md](docs/developer_guide.md) for a full development se
 
 ## Documentation
 
+- [Roadmap](docs/ROADMAP.md) -- Current status, what works, what's next
 - [Architecture](docs/ARCHITECTURE.md) -- Three-layer system design
 - [API Reference](docs/api_reference.md) -- Detailed API docs
 - [Developer Guide](docs/developer_guide.md) -- Getting started with development

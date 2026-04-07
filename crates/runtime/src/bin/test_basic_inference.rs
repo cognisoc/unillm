@@ -17,10 +17,11 @@ fn main() -> anyhow::Result<()> {
         hidden_size: 64,
         num_hidden_layers: 2,
         num_attention_heads: 4,
+        num_key_value_heads: 4,
         intermediate_size: 128,
         max_position_embeddings: 128,
         rope_theta: 10000.0,
-        rms_norm_eps: 1e-6, // Changed from layer_norm_epsilon
+        rms_norm_eps: 1e-6,
         ..Default::default()
     };
 

@@ -1,7 +1,14 @@
 [package]
-name = "runtime"
+name = "unillm-runtime"
 version = "0.1.0"
 edition = "2021"
+description = "Core inference runtime for UniLLM with 47 model architectures"
+license = "Apache-2.0"
+repository = "https://github.com/Skelf-Research/unillm"
+readme = "../../README.md"
+
+[lib]
+name = "runtime"
 
 [features]
 default = []

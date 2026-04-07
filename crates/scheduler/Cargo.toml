@@ -1,8 +1,12 @@
 [package]
-name = "scheduler"
+name = "unillm-scheduler"
 version = "0.1.0"
 edition = "2021"
+description = "Request scheduling with continuous batching for UniLLM"
+license = "Apache-2.0"
+repository = "https://github.com/Skelf-Research/unillm"
+readme = "../../README.md"
 
 [dependencies]
-kv = { path = "../kv" }
+kv = { package = "unillm-kv", path = "../kv", version = "0.1.0" }
 tokio = { version = "1.0", features = ["full"] }

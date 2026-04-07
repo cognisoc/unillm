@@ -13,16 +13,19 @@ cargo check
 cargo test
 
 # Test specific crates
-cargo test --lib -p runtime
-cargo test --lib -p inference
-cargo test --lib -p kv
-cargo test --lib -p scheduler
+cargo test --lib -p unillm-runtime
+cargo test --lib -p unillm-inference
+cargo test --lib -p unillm-kv
+cargo test --lib -p unillm-scheduler
 
 # Build with GPU features (when available)
-cargo build --features cuda,metal -p runtime
+cargo build --features cuda,metal -p unillm-runtime
 
 # Run basic inference test
-cargo run --bin test_basic_inference -p runtime
+cargo run --bin test_basic_inference -p unillm-runtime
+
+# Run CLI
+cargo run --bin unillm -p unillm-runtime -- generate --prompt "Hello"
 
 # Build optimized release
 cargo build --release --profile gpu-optimized
@@ -31,13 +34,13 @@ cargo build --release --profile gpu-optimized
 ### Development Commands
 ```bash
 # Check individual workspace member
-cargo check -p runtime
+cargo check -p unillm-runtime
 
 # Run tests with output
-cargo test --lib -p runtime -- --nocapture
+cargo test --lib -p unillm-runtime -- --nocapture
 
 # Test a specific function
-cargo test test_generation_config --lib -p runtime
+cargo test test_generation_config --lib -p unillm-runtime
 
 # Build documentation
 cargo doc --open --no-deps
@@ -138,13 +141,13 @@ impl Model for YourModelV2 {
 ### Test Commands
 ```bash
 # Run the Ollama integration test (downloads TinyLlama, runs inference)
-cargo run --bin test_ollama -p runtime
+cargo run --bin test_ollama -p unillm-runtime
 
 # List cached models
-cargo run --bin test_ollama -p runtime -- --list-cached
+cargo run --bin test_ollama -p unillm-runtime -- --list-cached
 
 # Use a different model
-cargo run --bin test_ollama -p runtime -- --model llama2:7b
+cargo run --bin test_ollama -p unillm-runtime -- --model llama2:7b
 ```
 
 ### Code Patterns to Follow
@@ -174,7 +177,7 @@ cargo run --bin test_ollama -p runtime -- --model llama2:7b
 
 - All tests live in `#[cfg(test)]` modules within source files
 - Focus on unit tests for individual components
-- Use `cargo test --lib -p runtime` for fast iteration
+- Use `cargo test --lib -p unillm-runtime` for fast iteration
 - Current test suite covers basic functionality with placeholder data
 - Tests expect errors when using dummy tensor data (this is normal)
 
