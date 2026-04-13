@@ -4,12 +4,13 @@
 //! model implementations build upon. It defines clean interfaces that
 //! hide implementation complexity.
 
-use crate::tensor_core::{Tensor, Device};
-use std::collections::HashMap;
-use std::sync::Arc;
+use crate::tensor_core::{DataType, Device, Tensor};
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use candle_core::quantized::QMatMul;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fmt;
+use std::sync::Arc;
 
 /// Core model trait - the single interface all models implement
 pub trait Model: Send + Sync {
@@ -17,10 +18,14 @@ pub trait Model: Send + Sync {
     type Config: ModelConfig;
 
     /// Create new model instance
-    fn new(config: Self::Config) -> Result<Self> where Self: Sized;
+    fn new(config: Self::Config) -> Result<Self>
+    where
+        Self: Sized;
 
     /// Load model with weights
-    fn from_weights(config: Self::Config, weights: ModelWeights) -> Result<Self> where Self: Sized;
+    fn from_weights(config: Self::Config, weights: ModelWeights) -> Result<Self>
+    where
+        Self: Sized;
 
     /// Forward pass - core inference method
     fn forward(&self, inputs: &ModelInputs) -> Result<ModelOutputs>;
@@ -144,11 +149,20 @@ impl std::fmt::Debug for ModelWeights {
             .field("tensors", &format!("{} tensors", self.tensors.len()))
             .field("metadata", &self.metadata)
             .field("gguf_config", &self.gguf_config)
-            .field("gguf_tokenizer", &self.gguf_tokenizer.as_ref().map(|_| "..."))
-            .field("quantized_tensors", &format!("{} quantized", self.quantized_tensors.len()));
+            .field(
+                "gguf_tokenizer",
+                &self.gguf_tokenizer.as_ref().map(|_| "..."),
+            )
+            .field(
+                "quantized_tensors",
+                &format!("{} quantized", self.quantized_tensors.len()),
+            );
 
         #[cfg(feature = "simd")]
-        debug.field("simd_quantized", &format!("{} simd", self.simd_quantized.len()));
+        debug.field(
+            "simd_quantized",
+            &format!("{} simd", self.simd_quantized.len()),
+        );
 
         debug.finish()
     }
@@ -183,8 +197,11 @@ pub struct GenerationConfig {
     pub temperature: f32,
     pub top_p: f32,
     pub top_k: Option<usize>,
+    pub min_p: f32,
     pub do_sample: bool,
     pub repetition_penalty: f32,
+    pub frequency_penalty: f32,
+    pub presence_penalty: f32,
     pub stop_sequences: Vec<String>,
     pub eos_token_id: u32,
     pub pad_token_id: u32,
@@ -195,10 +212,13 @@ impl Default for GenerationConfig {
         Self {
             max_new_tokens: 100,
             temperature: 1.0,
-            top_p: 0.9,
+            top_p: 1.0,
             top_k: None,
+            min_p: 0.0,
             do_sample: true,
             repetition_penalty: 1.0,
+            frequency_penalty: 0.0,
+            presence_penalty: 0.0,
             stop_sequences: vec![],
             eos_token_id: 2,
             pad_token_id: 0,
@@ -319,7 +339,10 @@ impl Default for GenerationMetrics {
 /// Model factory trait for creating models by name
 pub trait ModelFactory: Send + Sync {
     /// Create model from configuration
-    fn create_model(&self, config_json: &str) -> Result<Box<dyn Model<Config = Box<dyn ModelConfig>>>>;
+    fn create_model(
+        &self,
+        config_json: &str,
+    ) -> Result<Box<dyn Model<Config = Box<dyn ModelConfig>>>>;
 
     /// Get supported architecture names
     fn supported_architectures(&self) -> Vec<&str>;
@@ -345,12 +368,19 @@ impl ModelRegistry {
     where
         F: ModelFactory + 'static,
     {
-        self.factories.insert(architecture.to_string(), Box::new(factory));
+        self.factories
+            .insert(architecture.to_string(), Box::new(factory));
     }
 
     /// Create model by architecture name
-    pub fn create_model(&self, architecture: &str, config_json: &str) -> Result<Box<dyn Model<Config = Box<dyn ModelConfig>>>> {
-        let factory = self.factories.get(architecture)
+    pub fn create_model(
+        &self,
+        architecture: &str,
+        config_json: &str,
+    ) -> Result<Box<dyn Model<Config = Box<dyn ModelConfig>>>> {
+        let factory = self
+            .factories
+            .get(architecture)
             .ok_or_else(|| anyhow::anyhow!("Unsupported architecture: {}", architecture))?;
 
         factory.create_model(config_json)
@@ -368,7 +398,8 @@ impl ModelRegistry {
 }
 
 /// Global model registry
-static MODEL_REGISTRY: std::sync::OnceLock<std::sync::Mutex<ModelRegistry>> = std::sync::OnceLock::new();
+static MODEL_REGISTRY: std::sync::OnceLock<std::sync::Mutex<ModelRegistry>> =
+    std::sync::OnceLock::new();
 
 /// Get global model registry
 pub fn registry() -> &'static std::sync::Mutex<ModelRegistry> {
@@ -455,8 +486,14 @@ impl ModelOutputs {
         match self {
             Self::Logits { logits, .. } => logits,
             Self::Embeddings { embeddings, .. } => embeddings,
-            Self::Multimodal { text_logits: Some(logits), .. } => logits,
-            Self::Multimodal { image_logits: Some(logits), .. } => logits,
+            Self::Multimodal {
+                text_logits: Some(logits),
+                ..
+            } => logits,
+            Self::Multimodal {
+                image_logits: Some(logits),
+                ..
+            } => logits,
             Self::Sequence { logits, .. } => logits,
             _ => panic!("No main tensor available"),
         }
@@ -558,7 +595,8 @@ impl ModelWeights {
 
     /// Get tensor by name (required)
     pub fn require(&self, name: &str) -> Result<&Tensor> {
-        self.tensors.get(name)
+        self.tensors
+            .get(name)
             .ok_or_else(|| anyhow::anyhow!("Required tensor '{}' not found", name))
     }
 
@@ -574,7 +612,10 @@ impl ModelWeights {
 
     /// Get SIMD quantized tensor by name
     #[cfg(feature = "simd")]
-    pub fn get_simd_quantized(&self, name: &str) -> Option<Arc<crate::simd::quant::QuantizedTensor>> {
+    pub fn get_simd_quantized(
+        &self,
+        name: &str,
+    ) -> Option<Arc<crate::simd::quant::QuantizedTensor>> {
         self.simd_quantized.get(name).cloned()
     }
 
@@ -692,7 +733,8 @@ impl MoELayer {
         let router_logits = ops_fn::matmul(&flat_hidden, &self.router_weights)?;
 
         // Get top-k experts
-        let (topk_weights, topk_indices) = ops_fn::topk(&router_logits, self.num_experts_per_tok, -1)?;
+        let (topk_weights, topk_indices) =
+            ops_fn::topk(&router_logits, self.num_experts_per_tok, -1)?;
 
         // Softmax over the selected experts to get normalized weights
         let routing_weights = ops_fn::softmax(&topk_weights, -1)?;
@@ -719,7 +761,11 @@ impl MoELayer {
         let flat_hidden = hidden_states.reshape(&[num_tokens, hidden_size])?;
 
         // Initialize output tensor
-        let mut output = ops_fn::zeros(&[num_tokens, hidden_size], hidden_states.dtype(), &self.device)?;
+        let mut output = ops_fn::zeros(
+            &[num_tokens, hidden_size],
+            hidden_states.dtype(),
+            &self.device,
+        )?;
 
         // Process each expert
         // This is a basic implementation - production would batch tokens by expert
@@ -741,7 +787,8 @@ impl MoELayer {
                         let expert_output = expert_fn(&token_tensor, expert_idx)?;
 
                         // Get routing weight for this expert
-                        let weight_val: Vec<f32> = routing_weights_candle.get(tok_idx)?.to_vec1()?;
+                        let weight_val: Vec<f32> =
+                            routing_weights_candle.get(tok_idx)?.to_vec1()?;
                         let weight = weight_val[k];
 
                         // Scale by routing weight and add to output
@@ -754,12 +801,17 @@ impl MoELayer {
 
                         // Update output tensor at this position
                         // This is inefficient but works for the basic implementation
-                        let mut output_data: Vec<f32> = output.to_candle()?.flatten_all()?.to_vec1()?;
+                        let mut output_data: Vec<f32> =
+                            output.to_candle()?.flatten_all()?.to_vec1()?;
                         let new_data: Vec<f32> = new_val.to_vec1()?;
                         for (i, v) in new_data.iter().enumerate() {
                             output_data[tok_idx * hidden_size + i] = *v;
                         }
-                        output = Tensor::from_f32_slice(&output_data, &[num_tokens, hidden_size], &self.device)?;
+                        output = Tensor::from_f32_slice(
+                            &output_data,
+                            &[num_tokens, hidden_size],
+                            &self.device,
+                        )?;
                     }
                 }
             }
@@ -783,7 +835,11 @@ pub struct MoEExpert {
 
 impl MoEExpert {
     pub fn new(gate_proj: Tensor, up_proj: Tensor, down_proj: Tensor) -> Self {
-        Self { gate_proj, up_proj, down_proj }
+        Self {
+            gate_proj,
+            up_proj,
+            down_proj,
+        }
     }
 
     /// Forward pass: SwiGLU activation
@@ -861,3 +917,279 @@ macro_rules! model_config {
 //     hidden_size: usize = 4096,
 //     // ... other fields
 // });
+
+// ============================================================================
+// Error types and result aliases (unified from legacy types module)
+// ============================================================================
+
+/// Error types for model operations
+#[derive(Debug)]
+pub enum ModelError {
+    InitializationFailed(String),
+    ComputationFailed(String),
+    InvalidInput(String),
+    DeviceError(String),
+    MemoryError(String),
+    UnsupportedOperation(String),
+    GenerationFailed(String),
+    ValidationFailed(String),
+    ServerError(String),
+    LoadingError(String),
+    ConfigurationError(String),
+    NetworkError(String),
+    FileSystemError(String),
+    CommunicationError(String),
+    RuntimeError(String),
+}
+
+impl fmt::Display for ModelError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ModelError::InitializationFailed(msg) => write!(f, "Initialization failed: {}", msg),
+            ModelError::ComputationFailed(msg) => write!(f, "Computation failed: {}", msg),
+            ModelError::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
+            ModelError::DeviceError(msg) => write!(f, "Device error: {}", msg),
+            ModelError::MemoryError(msg) => write!(f, "Memory error: {}", msg),
+            ModelError::UnsupportedOperation(msg) => write!(f, "Unsupported operation: {}", msg),
+            ModelError::GenerationFailed(msg) => write!(f, "Generation failed: {}", msg),
+            ModelError::ValidationFailed(msg) => write!(f, "Validation failed: {}", msg),
+            ModelError::ServerError(msg) => write!(f, "Server error: {}", msg),
+            ModelError::LoadingError(msg) => write!(f, "Loading error: {}", msg),
+            ModelError::ConfigurationError(msg) => write!(f, "Configuration error: {}", msg),
+            ModelError::NetworkError(msg) => write!(f, "Network error: {}", msg),
+            ModelError::FileSystemError(msg) => write!(f, "File system error: {}", msg),
+            ModelError::CommunicationError(msg) => write!(f, "Communication error: {}", msg),
+            ModelError::RuntimeError(msg) => write!(f, "Runtime error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for ModelError {}
+
+/// Result type for model operations
+pub type ModelResult<T> = Result<T, ModelError>;
+
+/// Model features that can be supported
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelFeature {
+    FlashAttention,
+    GroupedQueryAttention,
+    RotaryEmbedding,
+    RMSNorm,
+    LayerNorm,
+    SwiGLU,
+    GELU,
+    PrefixCaching,
+    ChunkedPrefill,
+    DynamicBatching,
+    ContinuousBatching,
+    LongContext,
+    SlidingWindow,
+    Quantization,
+    LoRA,
+}
+
+/// Normalization types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NormalizationType {
+    LayerNorm,
+    RMSNorm,
+    GroupNorm,
+}
+
+/// Position embedding types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionEmbeddingType {
+    Absolute,
+    Relative,
+    Rotary,
+    ALiBi,
+}
+
+/// Model precision types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelPrecision {
+    Float32,
+    Float16,
+    BFloat16,
+    Int8,
+    Int4,
+}
+
+impl fmt::Display for ModelPrecision {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ModelPrecision::Float32 => write!(f, "fp32"),
+            ModelPrecision::Float16 => write!(f, "fp16"),
+            ModelPrecision::BFloat16 => write!(f, "bf16"),
+            ModelPrecision::Int8 => write!(f, "int8"),
+            ModelPrecision::Int4 => write!(f, "int4"),
+        }
+    }
+}
+
+/// Generation statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerationStats {
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+    pub total_tokens: usize,
+    pub time_to_first_token_ms: f64,
+    pub tokens_per_second: f64,
+    pub total_time_ms: f64,
+    pub cache_hit_rate: f64,
+    pub memory_usage_mb: f64,
+}
+
+// ============================================================================
+// KV Cache Provider Trait - Unified interface for KV caches
+// ============================================================================
+
+/// Unified trait for KV cache providers.
+///
+/// This trait defines the interface that all KV cache implementations must satisfy,
+/// enabling models to use any KV cache backend (Candle-based, paged, hybrid) without
+/// knowing the implementation details.
+pub trait KvCacheProvider: Send + Sync {
+    /// Get the number of layers in this cache
+    fn num_layers(&self) -> usize;
+
+    /// Get current cached sequence length
+    fn seq_len(&self) -> usize;
+
+    /// Clear all cached values (may keep buffers allocated for reuse)
+    fn clear(&mut self);
+
+    /// Check if cache is empty
+    fn is_empty(&self) -> bool {
+        self.seq_len() == 0
+    }
+}
+
+// ============================================================================
+// Model Executor - Bridge between scheduler and model execution
+// ============================================================================
+
+/// Result of a single execution step
+#[derive(Debug, Clone)]
+pub struct ExecutionResult {
+    /// Generated token IDs (excluding prompt)
+    pub token_ids: Vec<u32>,
+    /// Decoded text output
+    pub text: String,
+    /// Number of prompt tokens processed
+    pub prompt_tokens: usize,
+    /// Number of completion tokens generated
+    pub completion_tokens: usize,
+    /// Time to first token in milliseconds
+    pub time_to_first_token_ms: f64,
+    /// Total generation time in milliseconds
+    pub total_time_ms: f64,
+    /// Tokens per second
+    pub tokens_per_second: f64,
+}
+
+/// Execution context provided by the scheduler
+#[derive(Debug, Clone)]
+pub struct ExecutionContext {
+    /// GPU device assignment (if applicable)
+    pub gpu_id: usize,
+    /// Memory pressure level (0.0-1.0)
+    pub memory_pressure: f32,
+    /// Estimated latency budget in milliseconds
+    pub latency_budget_ms: Option<f64>,
+    /// Whether to use KV cache
+    pub use_cache: bool,
+}
+
+impl Default for ExecutionContext {
+    fn default() -> Self {
+        Self {
+            gpu_id: 0,
+            memory_pressure: 0.0,
+            latency_budget_ms: None,
+            use_cache: true,
+        }
+    }
+}
+
+/// Model executor trait that bridges the scheduler/batch processor
+/// to actual model execution. This decouples the scheduling layer from
+/// the model implementation, allowing different execution strategies.
+pub trait ModelExecutor: Send + Sync {
+    /// Execute generation for a single prompt
+    fn execute_generation(
+        &self,
+        prompt_tokens: &[u32],
+        config: &GenerationConfig,
+        context: &ExecutionContext,
+    ) -> Result<ExecutionResult>;
+
+    /// Get the model's EOS token ID
+    fn eos_token_id(&self) -> u32;
+
+    /// Get the model's context size
+    fn context_size(&self) -> usize;
+
+    /// Get the architecture name
+    fn architecture(&self) -> &str;
+}
+
+/// Blanket implementation of ModelExecutor for any ModelRunner
+impl<T: ModelRunner> ModelExecutor for T {
+    fn execute_generation(
+        &self,
+        prompt_tokens: &[u32],
+        config: &GenerationConfig,
+        _context: &ExecutionContext,
+    ) -> Result<ExecutionResult> {
+        use std::time::Instant;
+
+        let start = Instant::now();
+        let mut ttft: Option<f64> = None;
+        let mut text = String::new();
+        let mut token_ids = Vec::new();
+
+        let result = self.generate_streaming(prompt_tokens, config, &mut |token_id, token_text| {
+            if ttft.is_none() {
+                ttft = Some(start.elapsed().as_secs_f64() * 1000.0);
+            }
+            token_ids.push(token_id);
+            text.push_str(token_text);
+            true
+        });
+
+        result.map(|ids| {
+            let total_time = start.elapsed().as_secs_f64() * 1000.0;
+            let completion_tokens = ids.len();
+            let ttft_val = ttft.unwrap_or(0.0);
+            let tps = if total_time > 0.0 {
+                completion_tokens as f64 / (total_time / 1000.0)
+            } else {
+                0.0
+            };
+
+            ExecutionResult {
+                token_ids: ids,
+                text,
+                prompt_tokens: prompt_tokens.len(),
+                completion_tokens,
+                time_to_first_token_ms: ttft_val,
+                total_time_ms: total_time,
+                tokens_per_second: tps,
+            }
+        })
+    }
+
+    fn eos_token_id(&self) -> u32 {
+        ModelRunner::eos_token_id(self)
+    }
+
+    fn context_size(&self) -> usize {
+        ModelRunner::context_size(self)
+    }
+
+    fn architecture(&self) -> &str {
+        ModelRunner::architecture(self)
+    }
+}

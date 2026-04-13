@@ -4,10 +4,10 @@
 //! by integrating directly with our CUDA/HIP backends through VFIO passthrough.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::ptr::NonNull;
+use std::sync::{Arc, Mutex};
 
-use crate::hybrid_cache::{KVTensorPair, TokenId, SequenceId};
+use crate::hybrid_cache::{KVTensorPair, SequenceId, TokenId};
 
 /// GPU memory allocation result
 pub type GpuMemoryResult<T> = Result<T, GpuMemoryError>;
@@ -25,16 +25,29 @@ pub enum GpuMemoryError {
 impl std::fmt::Display for GpuMemoryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            GpuMemoryError::OutOfMemory { requested, available } =>
-                write!(f, "Out of GPU memory: requested {} bytes, {} available", requested, available),
-            GpuMemoryError::AllocationFailed { reason } =>
-                write!(f, "GPU allocation failed: {}", reason),
-            GpuMemoryError::InvalidAlignment { requested, required } =>
-                write!(f, "Invalid alignment: requested {}, required {}", requested, required),
-            GpuMemoryError::DeviceError { code, message } =>
-                write!(f, "GPU device error {}: {}", code, message),
-            GpuMemoryError::VfioError { message } =>
-                write!(f, "VFIO error: {}", message),
+            GpuMemoryError::OutOfMemory {
+                requested,
+                available,
+            } => write!(
+                f,
+                "Out of GPU memory: requested {} bytes, {} available",
+                requested, available
+            ),
+            GpuMemoryError::AllocationFailed { reason } => {
+                write!(f, "GPU allocation failed: {}", reason)
+            }
+            GpuMemoryError::InvalidAlignment {
+                requested,
+                required,
+            } => write!(
+                f,
+                "Invalid alignment: requested {}, required {}",
+                requested, required
+            ),
+            GpuMemoryError::DeviceError { code, message } => {
+                write!(f, "GPU device error {}: {}", code, message)
+            }
+            GpuMemoryError::VfioError { message } => write!(f, "VFIO error: {}", message),
         }
     }
 }
@@ -52,7 +65,12 @@ pub struct GpuDevicePtr {
 
 impl GpuDevicePtr {
     pub fn new(ptr: u64, size: usize, alignment: usize, device_id: u32) -> Self {
-        Self { ptr, size, alignment, device_id }
+        Self {
+            ptr,
+            size,
+            alignment,
+            device_id,
+        }
     }
 
     pub fn is_aligned(&self) -> bool {
@@ -121,10 +139,22 @@ pub trait GpuMemoryBackend: Send + Sync {
     fn free_pinned_host(&mut self, ptr: *mut u8) -> GpuMemoryResult<()>;
 
     /// Copy host to device asynchronously
-    fn copy_h2d_async(&self, dst: GpuDevicePtr, src: *const u8, size: usize, stream: u64) -> GpuMemoryResult<()>;
+    fn copy_h2d_async(
+        &self,
+        dst: GpuDevicePtr,
+        src: *const u8,
+        size: usize,
+        stream: u64,
+    ) -> GpuMemoryResult<()>;
 
     /// Copy device to host asynchronously
-    fn copy_d2h_async(&self, dst: *mut u8, src: GpuDevicePtr, size: usize, stream: u64) -> GpuMemoryResult<()>;
+    fn copy_d2h_async(
+        &self,
+        dst: *mut u8,
+        src: GpuDevicePtr,
+        size: usize,
+        stream: u64,
+    ) -> GpuMemoryResult<()>;
 
     /// Synchronize with device
     fn synchronize(&self) -> GpuMemoryResult<()>;
@@ -141,7 +171,7 @@ pub trait GpuMemoryBackend: Send + Sync {
 pub struct GpuDeviceProperties {
     pub device_id: u32,
     pub total_memory: usize,
-    pub memory_bandwidth: usize, // GB/s
+    pub memory_bandwidth: usize,        // GB/s
     pub compute_capability: (u32, u32), // major, minor
     pub max_threads_per_block: u32,
     pub max_shared_memory: usize,
@@ -220,12 +250,24 @@ impl GpuMemoryBackend for CudaMemoryBackend {
         Ok(())
     }
 
-    fn copy_h2d_async(&self, dst: GpuDevicePtr, src: *const u8, size: usize, stream: u64) -> GpuMemoryResult<()> {
+    fn copy_h2d_async(
+        &self,
+        dst: GpuDevicePtr,
+        src: *const u8,
+        size: usize,
+        stream: u64,
+    ) -> GpuMemoryResult<()> {
         unsafe { cuda_memcpy_h2d_async(dst.ptr, src, size, stream) }?;
         Ok(())
     }
 
-    fn copy_d2h_async(&self, dst: *mut u8, src: GpuDevicePtr, size: usize, stream: u64) -> GpuMemoryResult<()> {
+    fn copy_d2h_async(
+        &self,
+        dst: *mut u8,
+        src: GpuDevicePtr,
+        size: usize,
+        stream: u64,
+    ) -> GpuMemoryResult<()> {
         unsafe { cuda_memcpy_d2h_async(dst, src.ptr, size, stream) }?;
         Ok(())
     }
@@ -316,12 +358,24 @@ impl GpuMemoryBackend for HipMemoryBackend {
         Ok(())
     }
 
-    fn copy_h2d_async(&self, dst: GpuDevicePtr, src: *const u8, size: usize, stream: u64) -> GpuMemoryResult<()> {
+    fn copy_h2d_async(
+        &self,
+        dst: GpuDevicePtr,
+        src: *const u8,
+        size: usize,
+        stream: u64,
+    ) -> GpuMemoryResult<()> {
         unsafe { hip_memcpy_h2d_async(dst.ptr, src, size, stream) }?;
         Ok(())
     }
 
-    fn copy_d2h_async(&self, dst: *mut u8, src: GpuDevicePtr, size: usize, stream: u64) -> GpuMemoryResult<()> {
+    fn copy_d2h_async(
+        &self,
+        dst: *mut u8,
+        src: GpuDevicePtr,
+        size: usize,
+        stream: u64,
+    ) -> GpuMemoryResult<()> {
         unsafe { hip_memcpy_d2h_async(dst, src.ptr, size, stream) }?;
         Ok(())
     }
@@ -363,7 +417,12 @@ impl GpuAwareMemoryPool {
         Self::new_with_backend(backend)
     }
 
-    fn new_with_backend(mut backend: Box<dyn GpuMemoryBackend>) -> GpuMemoryResult<Self> {
+    pub fn new_cpu() -> GpuMemoryResult<Self> {
+        let backend = Box::new(CpuBackend::new(1024 * 1024 * 1024));
+        Self::new_with_backend(backend)
+    }
+
+    pub fn new_with_backend(mut backend: Box<dyn GpuMemoryBackend>) -> GpuMemoryResult<Self> {
         let device_properties = backend.get_device_properties()?;
 
         Ok(Self {
@@ -377,7 +436,12 @@ impl GpuAwareMemoryPool {
     }
 
     /// Allocate GPU memory for KV cache with optimal alignment
-    pub fn allocate_kv_cache(&mut self, token_count: usize, head_dim: usize, num_heads: usize) -> GpuMemoryResult<KVTensorPair> {
+    pub fn allocate_kv_cache(
+        &mut self,
+        token_count: usize,
+        head_dim: usize,
+        num_heads: usize,
+    ) -> GpuMemoryResult<KVTensorPair> {
         // Calculate memory requirements
         let key_size = token_count * head_dim * num_heads * 2; // 2 bytes for f16
         let value_size = key_size; // Same size for keys and values
@@ -401,7 +465,11 @@ impl GpuAwareMemoryPool {
     }
 
     /// Allocate aligned GPU memory with pooling
-    pub fn allocate_aligned(&mut self, size: usize, alignment: usize) -> GpuMemoryResult<GpuDevicePtr> {
+    pub fn allocate_aligned(
+        &mut self,
+        size: usize,
+        alignment: usize,
+    ) -> GpuMemoryResult<GpuDevicePtr> {
         // Round size up to alignment
         let aligned_size = (size + alignment - 1) & !(alignment - 1);
 
@@ -482,8 +550,18 @@ extern "C" {
     fn cuda_free(ptr: u64) -> Result<(), GpuMemoryError>;
     fn cuda_malloc_host(size: usize) -> Result<*mut u8, GpuMemoryError>;
     fn cuda_free_host(ptr: *mut u8) -> Result<(), GpuMemoryError>;
-    fn cuda_memcpy_h2d_async(dst: u64, src: *const u8, size: usize, stream: u64) -> Result<(), GpuMemoryError>;
-    fn cuda_memcpy_d2h_async(dst: *mut u8, src: u64, size: usize, stream: u64) -> Result<(), GpuMemoryError>;
+    fn cuda_memcpy_h2d_async(
+        dst: u64,
+        src: *const u8,
+        size: usize,
+        stream: u64,
+    ) -> Result<(), GpuMemoryError>;
+    fn cuda_memcpy_d2h_async(
+        dst: *mut u8,
+        src: u64,
+        size: usize,
+        stream: u64,
+    ) -> Result<(), GpuMemoryError>;
     fn cuda_synchronize() -> Result<(), GpuMemoryError>;
     fn cuda_get_total_memory(device_id: u32) -> Result<usize, GpuMemoryError>;
     fn cuda_get_device_properties(device_id: u32) -> Result<GpuDeviceProperties, GpuMemoryError>;
@@ -493,11 +571,116 @@ extern "C" {
     fn hip_free(ptr: u64) -> Result<(), GpuMemoryError>;
     fn hip_malloc_host(size: usize) -> Result<*mut u8, GpuMemoryError>;
     fn hip_free_host(ptr: *mut u8) -> Result<(), GpuMemoryError>;
-    fn hip_memcpy_h2d_async(dst: u64, src: *const u8, size: usize, stream: u64) -> Result<(), GpuMemoryError>;
-    fn hip_memcpy_d2h_async(dst: *mut u8, src: u64, size: usize, stream: u64) -> Result<(), GpuMemoryError>;
+    fn hip_memcpy_h2d_async(
+        dst: u64,
+        src: *const u8,
+        size: usize,
+        stream: u64,
+    ) -> Result<(), GpuMemoryError>;
+    fn hip_memcpy_d2h_async(
+        dst: *mut u8,
+        src: u64,
+        size: usize,
+        stream: u64,
+    ) -> Result<(), GpuMemoryError>;
     fn hip_synchronize() -> Result<(), GpuMemoryError>;
     fn hip_get_total_memory(device_id: u32) -> Result<usize, GpuMemoryError>;
     fn hip_get_device_properties(device_id: u32) -> Result<GpuDeviceProperties, GpuMemoryError>;
+}
+
+struct CpuBackend {
+    available_memory: usize,
+    total_memory: usize,
+    allocations: HashMap<u64, usize>,
+    next_ptr: u64,
+}
+
+impl CpuBackend {
+    fn new(total_memory: usize) -> Self {
+        Self {
+            available_memory: total_memory,
+            total_memory,
+            allocations: HashMap::new(),
+            next_ptr: 0x10000000,
+        }
+    }
+}
+
+impl GpuMemoryBackend for CpuBackend {
+    fn allocate_device(&mut self, size: usize, alignment: usize) -> GpuMemoryResult<GpuDevicePtr> {
+        if size > self.available_memory {
+            return Err(GpuMemoryError::OutOfMemory {
+                requested: size,
+                available: self.available_memory,
+            });
+        }
+
+        let aligned_size = (size + alignment - 1) & !(alignment - 1);
+        let ptr = self.next_ptr;
+        self.next_ptr += aligned_size as u64;
+
+        self.allocations.insert(ptr, aligned_size);
+        self.available_memory -= aligned_size;
+
+        Ok(GpuDevicePtr::new(ptr, aligned_size, alignment, 0))
+    }
+
+    fn free_device(&mut self, ptr: GpuDevicePtr) -> GpuMemoryResult<()> {
+        if let Some(size) = self.allocations.remove(&ptr.ptr) {
+            self.available_memory += size;
+        }
+        Ok(())
+    }
+
+    fn allocate_pinned_host(&mut self, _size: usize) -> GpuMemoryResult<*mut u8> {
+        Ok(0x10000000 as *mut u8)
+    }
+
+    fn free_pinned_host(&mut self, _ptr: *mut u8) -> GpuMemoryResult<()> {
+        Ok(())
+    }
+
+    fn copy_h2d_async(
+        &self,
+        _dst: GpuDevicePtr,
+        _src: *const u8,
+        _size: usize,
+        _stream: u64,
+    ) -> GpuMemoryResult<()> {
+        Ok(())
+    }
+
+    fn copy_d2h_async(
+        &self,
+        _dst: *mut u8,
+        _src: GpuDevicePtr,
+        _size: usize,
+        _stream: u64,
+    ) -> GpuMemoryResult<()> {
+        Ok(())
+    }
+
+    fn synchronize(&self) -> GpuMemoryResult<()> {
+        Ok(())
+    }
+
+    fn get_available_memory(&self) -> GpuMemoryResult<(usize, usize)> {
+        Ok((self.available_memory, self.total_memory))
+    }
+
+    fn get_device_properties(&self) -> GpuMemoryResult<GpuDeviceProperties> {
+        Ok(GpuDeviceProperties {
+            device_id: 0,
+            total_memory: self.total_memory,
+            memory_bandwidth: 100,
+            compute_capability: (0, 0),
+            max_threads_per_block: 1,
+            max_shared_memory: 0,
+            is_numa_aware: false,
+            pcie_generation: 0,
+            pcie_lanes: 0,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -524,7 +707,11 @@ mod tests {
     }
 
     impl GpuMemoryBackend for MockGpuBackend {
-        fn allocate_device(&mut self, size: usize, alignment: usize) -> GpuMemoryResult<GpuDevicePtr> {
+        fn allocate_device(
+            &mut self,
+            size: usize,
+            alignment: usize,
+        ) -> GpuMemoryResult<GpuDevicePtr> {
             if size > self.available_memory {
                 return Err(GpuMemoryError::OutOfMemory {
                     requested: size,
@@ -557,11 +744,23 @@ mod tests {
             Ok(())
         }
 
-        fn copy_h2d_async(&self, _dst: GpuDevicePtr, _src: *const u8, _size: usize, _stream: u64) -> GpuMemoryResult<()> {
+        fn copy_h2d_async(
+            &self,
+            _dst: GpuDevicePtr,
+            _src: *const u8,
+            _size: usize,
+            _stream: u64,
+        ) -> GpuMemoryResult<()> {
             Ok(())
         }
 
-        fn copy_d2h_async(&self, _dst: *mut u8, _src: GpuDevicePtr, _size: usize, _stream: u64) -> GpuMemoryResult<()> {
+        fn copy_d2h_async(
+            &self,
+            _dst: *mut u8,
+            _src: GpuDevicePtr,
+            _size: usize,
+            _stream: u64,
+        ) -> GpuMemoryResult<()> {
             Ok(())
         }
 

@@ -1,7 +1,7 @@
 //! Type definitions for the intelligent scheduler system
 
-use std::time::{Duration, Instant};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 /// Token identifier type
 pub type TokenId = u32;
@@ -57,6 +57,12 @@ pub enum RequestPriority {
     Normal = 1,
     High = 2,
     Critical = 3,
+}
+
+impl Default for RequestPriority {
+    fn default() -> Self {
+        Self::Normal
+    }
 }
 
 /// Scheduling policy options

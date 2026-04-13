@@ -44,9 +44,6 @@ pub mod simd;
 
 // === UTILITIES ===
 
-/// Type definitions
-pub mod types;
-
 /// Simple observability
 pub mod simple_observability;
 
@@ -62,10 +59,13 @@ pub mod server;
 /// Chat template rendering
 pub mod chat_template;
 
+/// Inference service (server-facing generation API)
+pub mod service;
+
 // === RE-EXPORTS ===
 
 pub use tensor_core::{Tensor, Device, DataType};
-pub use model_core::{Model, ModelInputs, ModelOutputs, GenerationConfig, MemoryRequirements, ModelWeights, ModelRunner, GenerationMetrics};
+pub use model_core::{Model, ModelInputs, ModelOutputs, GenerationConfig, MemoryRequirements, ModelWeights, ModelRunner, GenerationMetrics, ModelError, ModelResult, ModelFeature, NormalizationType, PositionEmbeddingType, ModelPrecision, GenerationStats, KvCacheProvider, ModelExecutor, ExecutionResult, ExecutionContext};
 pub use weight_loader_core::{WeightLoader};
 pub use kv_cache::{KVCache, LayerKVCache};
 pub use precompute::{RoPECache, CausalMaskCache, SlidingWindowMaskCache};

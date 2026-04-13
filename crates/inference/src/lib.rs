@@ -18,8 +18,13 @@ pub use batch::{BatchProcessor, BatchOptimizer};
 pub use metrics::{InferenceMetrics, PerformanceCollector};
 pub use types::*;
 
+// Re-export key runtime types for convenience
+pub use runtime::model_core::{Model, ModelRunner, GenerationConfig, ModelWeights, ModelInputs, ModelOutputs, ModelError, ModelResult};
+pub use runtime::tensor_core::{Tensor, Device, DataType};
+pub use runtime::kv_cache::{KVCache, LayerKVCache};
+
 /// Main trait for inference engines
-#[async_trait]
+#[async_trait::async_trait]
 pub trait InferenceEngine: Send + Sync {
     /// Process a single inference request
     async fn process_request(&self, request: InferenceRequest) -> InferenceResult<InferenceResponse>;

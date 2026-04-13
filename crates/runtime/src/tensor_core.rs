@@ -5,10 +5,11 @@
 //!
 //! Uses Candle (HuggingFace's Rust ML framework) as the computational backend.
 
-use std::sync::Arc;
 use anyhow::Result;
-use candle_core::{DType, Tensor as CandleTensor, Device as CandleDevice};
+use candle_core::{DType, Device as CandleDevice, Tensor as CandleTensor};
 use candle_nn::ops as candle_ops;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Core tensor abstraction - the single source of truth for all tensor operations
 #[derive(Debug, Clone)]
@@ -24,7 +25,7 @@ pub struct Tensor {
 }
 
 /// Data types supported by tensors
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DataType {
     Float32,
     Float16,
@@ -32,6 +33,7 @@ pub enum DataType {
     Int32,
     Int64,
     Int8,
+    Int4,
     Bool,
 }
 
@@ -39,7 +41,8 @@ pub enum DataType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Device {
     CPU,
-    CUDA(usize), // GPU ID
+    CUDA(usize),
+    ROCm(usize),
     Metal(usize),
 }
 
@@ -245,7 +248,14 @@ pub trait TensorOps: Send + Sync {
     fn topk(&self, input: &Tensor, k: usize, dim: i64) -> Result<(Tensor, Tensor)>;
 
     /// 1D convolution
-    fn conv1d(&self, input: &Tensor, weight: &Tensor, bias: Option<&Tensor>, stride: usize, padding: usize) -> Result<Tensor>;
+    fn conv1d(
+        &self,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        stride: usize,
+        padding: usize,
+    ) -> Result<Tensor>;
 
     /// Tanh activation
     fn tanh(&self, input: &Tensor) -> Result<Tensor>;
@@ -260,7 +270,8 @@ pub trait TensorOps: Send + Sync {
     fn gather(&self, input: &Tensor, dim: usize, indices: &Tensor) -> Result<Tensor>;
 
     /// Scatter elements along dimension using indices
-    fn scatter(&self, input: &Tensor, dim: usize, indices: &Tensor, src: &Tensor) -> Result<Tensor>;
+    fn scatter(&self, input: &Tensor, dim: usize, indices: &Tensor, src: &Tensor)
+        -> Result<Tensor>;
 
     // ========== Fused Operations for Performance ==========
 
@@ -269,20 +280,16 @@ pub trait TensorOps: Send + Sync {
     /// Works for all attention-based models: LLaMA, Qwen, Gemma, Mistral, etc.
     fn flash_attention(
         &self,
-        query: &Tensor,      // [batch, heads, seq_q, head_dim]
-        key: &Tensor,        // [batch, heads, seq_k, head_dim]
-        value: &Tensor,      // [batch, heads, seq_k, head_dim]
+        query: &Tensor, // [batch, heads, seq_q, head_dim]
+        key: &Tensor,   // [batch, heads, seq_k, head_dim]
+        value: &Tensor, // [batch, heads, seq_k, head_dim]
         scale: f32,
         causal: bool,
     ) -> Result<Tensor>;
 
     /// Fused SwiGLU activation: silu(gate) * up
     /// Used by LLaMA, Qwen, Mistral, etc.
-    fn fused_swiglu(
-        &self,
-        gate: &Tensor,
-        up: &Tensor,
-    ) -> Result<Tensor>;
+    fn fused_swiglu(&self, gate: &Tensor, up: &Tensor) -> Result<Tensor>;
 
     /// Fused residual add + RMS norm
     /// Computes: rms_norm(residual + hidden, weight, eps)
@@ -308,7 +315,7 @@ impl Tensor {
         shape: Vec<usize>,
         dtype: DataType,
         device: Device,
-        data: Arc<dyn TensorStorage>
+        data: Arc<dyn TensorStorage>,
     ) -> Self {
         Self {
             data,
@@ -361,7 +368,8 @@ impl Tensor {
         if old_numel != new_numel {
             return Err(anyhow::anyhow!(
                 "Cannot reshape tensor: {} elements to {} elements",
-                old_numel, new_numel
+                old_numel,
+                new_numel
             ));
         }
 
@@ -446,7 +454,11 @@ impl Tensor {
                 // Candle doesn't support i32 directly, convert to i64
                 let int_data: &[i32] = bytemuck::cast_slice(data_slice);
                 let int64_data: Vec<i64> = int_data.iter().map(|&x| x as i64).collect();
-                Ok(CandleTensor::from_slice(&int64_data, shape, &candle_device)?)
+                Ok(CandleTensor::from_slice(
+                    &int64_data,
+                    shape,
+                    &candle_device,
+                )?)
             }
             _ => {
                 // For other types, create zeros
@@ -502,7 +514,9 @@ impl Tensor {
         let candle_tensor = self.to_candle()?;
         let dims = candle_tensor.dims();
         if dims.len() < 2 {
-            return Err(anyhow::anyhow!("Cannot transpose tensor with less than 2 dimensions"));
+            return Err(anyhow::anyhow!(
+                "Cannot transpose tensor with less than 2 dimensions"
+            ));
         }
         let transposed = candle_tensor.t()?;
         Ok(Self::from_candle(transposed))
@@ -549,7 +563,7 @@ impl TensorStorage for CpuStorage {
     fn to_device(&self, device: &Device) -> Result<Arc<dyn TensorStorage>> {
         match device {
             Device::CPU => Ok(Arc::new(self.clone())),
-            Device::CUDA(_) | Device::Metal(_) => {
+            Device::CUDA(_) | Device::ROCm(_) | Device::Metal(_) => {
                 // TODO: Implement GPU transfer
                 Err(anyhow::anyhow!("GPU transfer not implemented yet"))
             }
@@ -597,7 +611,7 @@ impl TensorStorage for GpuStorage {
                 let cpu_storage = Arc::new(CpuStorage::zeros(self.size));
                 Ok(cpu_storage)
             }
-            Device::CUDA(_) | Device::Metal(_) => {
+            Device::CUDA(_) | Device::ROCm(_) | Device::Metal(_) => {
                 // Basic GPU->GPU transfer: create new GPU storage with same size
                 let gpu_storage = Arc::new(GpuStorage {
                     ptr: std::ptr::null_mut(),
@@ -633,7 +647,7 @@ impl TensorDispatcher {
         for tensor in tensors {
             match tensor.device() {
                 Device::CPU => continue,
-                Device::CUDA(_) | Device::Metal(_) => {
+                Device::CUDA(_) | Device::ROCm(_) | Device::Metal(_) => {
                     // Use GPU ops if available
                     if let Some(gpu_ops) = &self.gpu_ops {
                         return gpu_ops.as_ref();
@@ -717,7 +731,7 @@ impl TensorOps for TensorDispatcher {
     fn zeros(&self, shape: &[usize], dtype: DataType, device: &Device) -> Result<Tensor> {
         match device {
             Device::CPU => self.cpu_ops.zeros(shape, dtype, device),
-            Device::CUDA(_) | Device::Metal(_) => {
+            Device::CUDA(_) | Device::ROCm(_) | Device::Metal(_) => {
                 // TODO: Use GPU ops when available
                 self.cpu_ops.zeros(shape, dtype, &Device::CPU)
             }
@@ -727,7 +741,7 @@ impl TensorOps for TensorDispatcher {
     fn randn(&self, shape: &[usize], dtype: DataType, device: &Device) -> Result<Tensor> {
         match device {
             Device::CPU => self.cpu_ops.randn(shape, dtype, device),
-            Device::CUDA(_) | Device::Metal(_) => {
+            Device::CUDA(_) | Device::ROCm(_) | Device::Metal(_) => {
                 // TODO: Use GPU ops when available
                 self.cpu_ops.randn(shape, dtype, &Device::CPU)
             }
@@ -769,7 +783,14 @@ impl TensorOps for TensorDispatcher {
         ops.topk(input, k, dim)
     }
 
-    fn conv1d(&self, input: &Tensor, weight: &Tensor, bias: Option<&Tensor>, stride: usize, padding: usize) -> Result<Tensor> {
+    fn conv1d(
+        &self,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        stride: usize,
+        padding: usize,
+    ) -> Result<Tensor> {
         let tensors = if let Some(b) = bias {
             vec![input, weight, b]
         } else {
@@ -799,13 +820,26 @@ impl TensorOps for TensorDispatcher {
         ops.gather(input, dim, indices)
     }
 
-    fn scatter(&self, input: &Tensor, dim: usize, indices: &Tensor, src: &Tensor) -> Result<Tensor> {
+    fn scatter(
+        &self,
+        input: &Tensor,
+        dim: usize,
+        indices: &Tensor,
+        src: &Tensor,
+    ) -> Result<Tensor> {
         let ops = self.get_ops(&[input, indices, src]);
         ops.scatter(input, dim, indices, src)
     }
 
     // Fused operations for performance
-    fn flash_attention(&self, query: &Tensor, key: &Tensor, value: &Tensor, scale: f32, causal: bool) -> Result<Tensor> {
+    fn flash_attention(
+        &self,
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+        scale: f32,
+        causal: bool,
+    ) -> Result<Tensor> {
         let ops = self.get_ops(&[query, key, value]);
         ops.flash_attention(query, key, value, scale, causal)
     }
@@ -815,7 +849,13 @@ impl TensorOps for TensorDispatcher {
         ops.fused_swiglu(gate, up)
     }
 
-    fn fused_residual_rms_norm(&self, residual: &Tensor, hidden: &Tensor, weight: &Tensor, eps: f32) -> Result<Tensor> {
+    fn fused_residual_rms_norm(
+        &self,
+        residual: &Tensor,
+        hidden: &Tensor,
+        weight: &Tensor,
+        eps: f32,
+    ) -> Result<Tensor> {
         let ops = self.get_ops(&[residual, hidden, weight]);
         ops.fused_residual_rms_norm(residual, hidden, weight, eps)
     }
@@ -1074,8 +1114,8 @@ impl TensorOps for CpuTensorOpsImpl {
         let candle_dtype = dtype.to_candle();
 
         // Use Candle's random tensor generation
-        let result = CandleTensor::randn(0f32, 1f32, shape, &candle_device)?
-            .to_dtype(candle_dtype)?;
+        let result =
+            CandleTensor::randn(0f32, 1f32, shape, &candle_device)?.to_dtype(candle_dtype)?;
 
         Ok(Tensor::from_candle(result))
     }
@@ -1115,9 +1155,7 @@ impl TensorOps for CpuTensorOpsImpl {
         }
 
         // Convert all tensors to Candle
-        let candle_tensors: Result<Vec<_>> = tensors.iter()
-            .map(|t| t.to_candle())
-            .collect();
+        let candle_tensors: Result<Vec<_>> = tensors.iter().map(|t| t.to_candle()).collect();
         let candle_tensors = candle_tensors?;
 
         // Create refs for Candle concat
@@ -1166,7 +1204,11 @@ impl TensorOps for CpuTensorOpsImpl {
         // Get the size of the dimension we're taking topk over
         let dim_size = x.dims()[actual_dim];
         if k > dim_size {
-            return Err(anyhow::anyhow!("k ({}) is larger than dimension size ({})", k, dim_size));
+            return Err(anyhow::anyhow!(
+                "k ({}) is larger than dimension size ({})",
+                k,
+                dim_size
+            ));
         }
 
         // For simple case: 2D tensor, topk on last dim
@@ -1221,8 +1263,10 @@ impl TensorOps for CpuTensorOpsImpl {
                     let row = x.get(b)?.get(s)?;
                     let row_data: Vec<f32> = row.to_vec1()?;
 
-                    let mut indexed: Vec<(usize, f32)> = row_data.iter().cloned().enumerate().collect();
-                    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    let mut indexed: Vec<(usize, f32)> =
+                        row_data.iter().cloned().enumerate().collect();
+                    indexed
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
                     for i in 0..k {
                         all_values.push(indexed[i].1);
@@ -1237,11 +1281,22 @@ impl TensorOps for CpuTensorOpsImpl {
 
             Ok((values, indices))
         } else {
-            Err(anyhow::anyhow!("topk not implemented for tensor with {} dimensions on dim {}", x.dims().len(), actual_dim))
+            Err(anyhow::anyhow!(
+                "topk not implemented for tensor with {} dimensions on dim {}",
+                x.dims().len(),
+                actual_dim
+            ))
         }
     }
 
-    fn conv1d(&self, input: &Tensor, weight: &Tensor, bias: Option<&Tensor>, stride: usize, padding: usize) -> Result<Tensor> {
+    fn conv1d(
+        &self,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        stride: usize,
+        padding: usize,
+    ) -> Result<Tensor> {
         let x = input.to_candle()?;
         let w = weight.to_candle()?;
 
@@ -1304,7 +1359,13 @@ impl TensorOps for CpuTensorOpsImpl {
         Ok(Tensor::from_candle(result))
     }
 
-    fn scatter(&self, input: &Tensor, dim: usize, indices: &Tensor, src: &Tensor) -> Result<Tensor> {
+    fn scatter(
+        &self,
+        input: &Tensor,
+        dim: usize,
+        indices: &Tensor,
+        src: &Tensor,
+    ) -> Result<Tensor> {
         let x = input.to_candle()?;
         let idx = indices.to_candle()?;
         let s = src.to_candle()?;
@@ -1360,7 +1421,8 @@ impl TensorOps for CpuTensorOpsImpl {
 
             // Broadcast mask to match scores shape
             let scores_shape = scaled_scores.dims();
-            let mask_shape: Vec<usize> = scores_shape.iter()
+            let mask_shape: Vec<usize> = scores_shape
+                .iter()
                 .take(scores_shape.len() - 2)
                 .map(|_| 1)
                 .chain([seq_q, seq_k])
@@ -1432,24 +1494,24 @@ impl DataType {
             DataType::Int32 => 4,
             DataType::Int64 => 8,
             DataType::Int8 => 1,
+            DataType::Int4 => 1,
             DataType::Bool => 1,
         }
     }
 
-    /// Convert to Candle DType
     pub fn to_candle(&self) -> DType {
         match self {
             DataType::Float32 => DType::F32,
             DataType::Float16 => DType::F16,
             DataType::BFloat16 => DType::BF16,
-            DataType::Int32 => DType::U32, // Candle uses U32 instead of I32
+            DataType::Int32 => DType::U32,
             DataType::Int64 => DType::I64,
-            DataType::Int8 => DType::U8,   // Candle uses U8 instead of I8
-            DataType::Bool => DType::U8,   // Candle uses U8 for bool
+            DataType::Int8 => DType::U8,
+            DataType::Int4 => DType::U8,
+            DataType::Bool => DType::U8,
         }
     }
 
-    /// Convert from Candle DType
     pub fn from_candle(dtype: DType) -> Self {
         match dtype {
             DType::F32 => DataType::Float32,
@@ -1457,18 +1519,18 @@ impl DataType {
             DType::BF16 => DataType::BFloat16,
             DType::I64 => DataType::Int64,
             DType::U8 => DataType::Int8,
-            DType::F64 => DataType::Float32, // Downcast f64 to f32
-            DType::U32 => DataType::Int32,   // Map unsigned to signed
+            DType::F64 => DataType::Float32,
+            DType::U32 => DataType::Int32,
         }
     }
 }
 
 impl Device {
-    /// Convert to Candle Device
     pub fn to_candle(&self) -> CandleDevice {
         match self {
             Device::CPU => CandleDevice::Cpu,
             Device::CUDA(id) => CandleDevice::cuda_if_available(*id).unwrap_or(CandleDevice::Cpu),
+            Device::ROCm(id) => CandleDevice::cuda_if_available(*id).unwrap_or(CandleDevice::Cpu),
             Device::Metal(id) => {
                 #[cfg(feature = "metal")]
                 {
@@ -1483,12 +1545,11 @@ impl Device {
         }
     }
 
-    /// Convert from Candle Device
     pub fn from_candle(device: &CandleDevice) -> Self {
         match device {
             CandleDevice::Cpu => Device::CPU,
-            CandleDevice::Cuda(_) => Device::CUDA(0), // Default to device 0
-            CandleDevice::Metal(_) => Device::Metal(0), // Default to device 0
+            CandleDevice::Cuda(_) => Device::CUDA(0),
+            CandleDevice::Metal(_) => Device::Metal(0),
         }
     }
 }
@@ -1590,7 +1651,14 @@ impl TensorOps for GpuTensorOpsImpl {
         CpuTensorOpsImpl.topk(input, k, dim)
     }
 
-    fn conv1d(&self, input: &Tensor, weight: &Tensor, bias: Option<&Tensor>, stride: usize, padding: usize) -> Result<Tensor> {
+    fn conv1d(
+        &self,
+        input: &Tensor,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        stride: usize,
+        padding: usize,
+    ) -> Result<Tensor> {
         CpuTensorOpsImpl.conv1d(input, weight, bias, stride, padding)
     }
 
@@ -1610,12 +1678,25 @@ impl TensorOps for GpuTensorOpsImpl {
         CpuTensorOpsImpl.gather(input, dim, indices)
     }
 
-    fn scatter(&self, input: &Tensor, dim: usize, indices: &Tensor, src: &Tensor) -> Result<Tensor> {
+    fn scatter(
+        &self,
+        input: &Tensor,
+        dim: usize,
+        indices: &Tensor,
+        src: &Tensor,
+    ) -> Result<Tensor> {
         CpuTensorOpsImpl.scatter(input, dim, indices, src)
     }
 
     // Fused operations - delegate to CPU implementation for now
-    fn flash_attention(&self, query: &Tensor, key: &Tensor, value: &Tensor, scale: f32, causal: bool) -> Result<Tensor> {
+    fn flash_attention(
+        &self,
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+        scale: f32,
+        causal: bool,
+    ) -> Result<Tensor> {
         CpuTensorOpsImpl.flash_attention(query, key, value, scale, causal)
     }
 
@@ -1623,7 +1704,13 @@ impl TensorOps for GpuTensorOpsImpl {
         CpuTensorOpsImpl.fused_swiglu(gate, up)
     }
 
-    fn fused_residual_rms_norm(&self, residual: &Tensor, hidden: &Tensor, weight: &Tensor, eps: f32) -> Result<Tensor> {
+    fn fused_residual_rms_norm(
+        &self,
+        residual: &Tensor,
+        hidden: &Tensor,
+        weight: &Tensor,
+        eps: f32,
+    ) -> Result<Tensor> {
         CpuTensorOpsImpl.fused_residual_rms_norm(residual, hidden, weight, eps)
     }
 }
@@ -1648,7 +1735,12 @@ pub mod ops_fn {
         ops().randn(shape, dtype, device)
     }
 
-    pub fn layer_norm(input: &Tensor, weight: &Tensor, bias: Option<&Tensor>, eps: f32) -> Result<Tensor> {
+    pub fn layer_norm(
+        input: &Tensor,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        eps: f32,
+    ) -> Result<Tensor> {
         ops().layer_norm(input, weight, bias, eps)
     }
 
@@ -1664,7 +1756,12 @@ pub mod ops_fn {
         ops().mul(a, b)
     }
 
-    pub fn attention(query: &Tensor, key: &Tensor, value: &Tensor, mask: Option<&Tensor>) -> Result<Tensor> {
+    pub fn attention(
+        query: &Tensor,
+        key: &Tensor,
+        value: &Tensor,
+        mask: Option<&Tensor>,
+    ) -> Result<Tensor> {
         ops().attention(query, key, value, mask, None)
     }
 
@@ -1713,7 +1810,13 @@ pub mod ops_fn {
     }
 
     /// 1D convolution
-    pub fn conv1d(input: &Tensor, weight: &Tensor, bias: Option<&Tensor>, stride: usize, padding: usize) -> Result<Tensor> {
+    pub fn conv1d(
+        input: &Tensor,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        stride: usize,
+        padding: usize,
+    ) -> Result<Tensor> {
         ops().conv1d(input, weight, bias, stride, padding)
     }
 
@@ -1761,11 +1864,19 @@ pub mod ops_fn {
     /// Create a sliding window attention mask
     /// Returns a mask where 1.0 means "attend" and 0.0 means "don't attend"
     /// Each position can only attend to positions within window_size positions before it
-    pub fn sliding_window_mask(seq_len: usize, window_size: usize, device: &Device) -> Result<Tensor> {
+    pub fn sliding_window_mask(
+        seq_len: usize,
+        window_size: usize,
+        device: &Device,
+    ) -> Result<Tensor> {
         let mut mask_data = vec![0.0f32; seq_len * seq_len];
         for i in 0..seq_len {
             // Can attend to positions from max(0, i - window_size + 1) to i (inclusive)
-            let start = if i >= window_size { i - window_size + 1 } else { 0 };
+            let start = if i >= window_size {
+                i - window_size + 1
+            } else {
+                0
+            };
             for j in start..=i {
                 mask_data[i * seq_len + j] = 1.0;
             }
@@ -1775,7 +1886,11 @@ pub mod ops_fn {
 
     /// Create a combined causal + sliding window mask
     /// This is the typical mask used in Mistral/Mixtral
-    pub fn causal_sliding_window_mask(seq_len: usize, window_size: usize, device: &Device) -> Result<Tensor> {
+    pub fn causal_sliding_window_mask(
+        seq_len: usize,
+        window_size: usize,
+        device: &Device,
+    ) -> Result<Tensor> {
         // Same as sliding_window_mask since sliding window is already causal
         sliding_window_mask(seq_len, window_size, device)
     }

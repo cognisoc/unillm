@@ -3,32 +3,36 @@
 //! This crate implements both continuous batching and intelligent scheduling
 //! that integrates directly with the GPU memory management system.
 
-mod chunked_prefill;
-mod stream_overlap;
-mod intelligent_scheduler;
-mod cache_analyzer;
-mod gpu_memory_tracker;
 mod adaptive_policy;
-mod types;
+mod cache_analyzer;
+mod chunked_prefill;
+mod gpu_memory_tracker;
+mod intelligent_scheduler;
+mod stream_overlap;
+pub mod types;
 
-use std::collections::{HashMap, VecDeque, BinaryHeap};
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use std::cmp::Ordering;
 
 // Existing components
-pub use chunked_prefill::{ChunkedPrefillManager, ChunkedPrefillConfig, PrefillChunk, PrefillStats};
+pub use chunked_prefill::{
+    ChunkedPrefillConfig, ChunkedPrefillManager, PrefillChunk, PrefillStats,
+};
 pub use stream_overlap::{
-    StreamOverlapManager, StreamType, StreamPriority, StreamOperation, OperationData,
-    StreamOverlapStats, create_h2d_operation, create_compute_operation,
-    create_prefill_operation, create_decode_operation
+    create_compute_operation, create_decode_operation, create_h2d_operation,
+    create_prefill_operation, OperationData, StreamOperation, StreamOverlapManager,
+    StreamOverlapStats, StreamPriority, StreamType,
 };
 
 // Intelligent scheduler components
-pub use intelligent_scheduler::{IntelligentScheduler, SchedulingPolicy, InferenceRequest, ScheduleInfo};
-pub use cache_analyzer::CacheAwareAnalyzer;
-pub use gpu_memory_tracker::{GpuMemoryTracker, GpuMemoryStats};
 pub use adaptive_policy::{AdaptivePolicyEngine, PolicySummary, WorkloadAnalysis};
+pub use cache_analyzer::CacheAwareAnalyzer;
+pub use gpu_memory_tracker::{GpuMemoryStats, GpuMemoryTracker};
+pub use intelligent_scheduler::{
+    InferenceRequest, IntelligentScheduler, ScheduleInfo, SchedulingPolicy,
+};
 pub use types::*;
 
 /// Request priority levels
@@ -107,27 +111,27 @@ impl Request {
             is_prefill: true,
         }
     }
-    
+
     /// Get the total sequence length (prompt + output)
     pub fn total_length(&self) -> usize {
         self.prompt_tokens.len() + self.current_output_length
     }
-    
+
     /// Get the remaining output length
     pub fn remaining_output_length(&self) -> usize {
         self.max_output_length - self.current_output_length
     }
-    
+
     /// Check if request is completed
     pub fn is_completed(&self) -> bool {
         matches!(self.state, RequestState::Completed | RequestState::Failed)
     }
-    
+
     /// Get request age
     pub fn age(&self) -> Duration {
         self.created_at.elapsed()
     }
-    
+
     /// Get processing time
     pub fn processing_time(&self) -> Option<Duration> {
         if let Some(started) = self.started_at {
@@ -165,7 +169,7 @@ impl RequestBatch {
         let max_sequence_length = requests.iter().map(|r| r.total_length()).max().unwrap_or(0);
         let total_tokens = requests.iter().map(|r| r.total_length()).sum();
         let is_prefill_batch = requests.iter().any(|r| r.is_prefill);
-        
+
         Self {
             requests,
             created_at: Instant::now(),
@@ -175,17 +179,17 @@ impl RequestBatch {
             total_tokens,
         }
     }
-    
+
     /// Get the number of requests in this batch
     pub fn size(&self) -> usize {
         self.requests.len()
     }
-    
+
     /// Check if batch is empty
     pub fn is_empty(&self) -> bool {
         self.requests.is_empty()
     }
-    
+
     /// Get batch age
     pub fn age(&self) -> Duration {
         self.created_at.elapsed()
@@ -220,16 +224,12 @@ pub struct ContinuousBatchingScheduler {
 
 impl ContinuousBatchingScheduler {
     /// Create a new continuous batching scheduler
-    /// 
+    ///
     /// # Arguments
     /// * `max_batch_size` - Maximum number of requests per batch
     /// * `max_sequence_length` - Maximum sequence length
     /// * `batching_window_ms` - Batching window in milliseconds
-    pub fn new(
-        max_batch_size: usize,
-        max_sequence_length: usize,
-        batching_window_ms: u64,
-    ) -> Self {
+    pub fn new(max_batch_size: usize, max_sequence_length: usize, batching_window_ms: u64) -> Self {
         Self {
             pending_requests: VecDeque::new(),
             active_requests: HashMap::new(),
@@ -244,7 +244,7 @@ impl ContinuousBatchingScheduler {
             stats: SchedulerStats::new(),
         }
     }
-    
+
     /// Add a new request to the scheduler
     pub fn add_request(
         &mut self,
@@ -254,39 +254,46 @@ impl ContinuousBatchingScheduler {
     ) -> u32 {
         let request_id = self.next_request_id;
         self.next_request_id += 1;
-        
-        let request = Request::new(request_id, prompt_tokens.clone(), max_output_length, priority);
+
+        let request = Request::new(
+            request_id,
+            prompt_tokens.clone(),
+            max_output_length,
+            priority,
+        );
         let prompt_len = prompt_tokens.len(); // Store before moving
         self.pending_requests.push_back(request);
 
         self.stats.total_requests += 1;
 
-        println!("Added request {} with {} prompt tokens, max output: {}",
-                 request_id, prompt_len, max_output_length);
-        
+        println!(
+            "Added request {} with {} prompt tokens, max output: {}",
+            request_id, prompt_len, max_output_length
+        );
+
         request_id
     }
-    
+
     /// Create a new batch from pending requests
     pub fn create_batch(&mut self) -> Option<RequestBatch> {
         if self.pending_requests.is_empty() {
             return None;
         }
-        
+
         let mut batch_requests = Vec::new();
         let mut current_tokens = 0;
-        
+
         // Sort pending requests by priority (highest first)
         let mut sorted_requests: Vec<_> = self.pending_requests.drain(..).collect();
         sorted_requests.sort_by(|a, b| b.priority.cmp(&a.priority));
-        
+
         for request in sorted_requests {
             let request_tokens = request.total_length();
-            
+
             // Check if we can fit this request in the current batch
-            if batch_requests.len() < self.max_batch_size 
-                && current_tokens + request_tokens <= self.max_sequence_length {
-                
+            if batch_requests.len() < self.max_batch_size
+                && current_tokens + request_tokens <= self.max_sequence_length
+            {
                 batch_requests.push(request);
                 current_tokens += request_tokens;
             } else {
@@ -295,120 +302,136 @@ impl ContinuousBatchingScheduler {
                 break;
             }
         }
-        
+
         if batch_requests.is_empty() {
             return None;
         }
-        
+
         let batch_id = self.next_batch_id;
         self.next_batch_id += 1;
-        
+
         let batch = RequestBatch::new(batch_id, batch_requests);
-        
+
         // Move requests to active
         for request in &batch.requests {
             self.active_requests.insert(request.id, request.clone());
         }
-        
+
         self.current_batch = Some(batch.clone());
         self.last_batch_time = Instant::now();
-        
+
         self.stats.batches_created += 1;
         self.stats.active_requests += batch.size();
-        
-        println!("Created batch {} with {} requests, {} total tokens", 
-                 batch_id, batch.size(), batch.total_tokens);
-        
+
+        println!(
+            "Created batch {} with {} requests, {} total tokens",
+            batch_id,
+            batch.size(),
+            batch.total_tokens
+        );
+
         Some(batch)
     }
-    
+
     /// Check if it's time to create a new batch
     pub fn should_create_batch(&self) -> bool {
-        !self.pending_requests.is_empty() 
-            && (self.current_batch.is_none() 
+        !self.pending_requests.is_empty()
+            && (self.current_batch.is_none()
                 || self.last_batch_time.elapsed() >= self.batching_window)
     }
-    
+
     /// Complete a request
     pub fn complete_request(&mut self, request_id: u32) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(mut request) = self.active_requests.remove(&request_id) {
             request.state = RequestState::Completed;
             request.completed_at = Some(Instant::now());
             self.completed_requests.push_back(request);
-            
+
             self.stats.active_requests -= 1;
             self.stats.completed_requests += 1;
-            
+
             println!("Completed request {}", request_id);
         }
-        
+
         Ok(())
     }
-    
+
     /// Fail a request
-    pub fn fail_request(&mut self, request_id: u32, reason: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn fail_request(
+        &mut self,
+        request_id: u32,
+        reason: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(mut request) = self.active_requests.remove(&request_id) {
             request.state = RequestState::Failed;
             request.completed_at = Some(Instant::now());
             self.completed_requests.push_back(request);
-            
+
             self.stats.active_requests -= 1;
             self.stats.failed_requests += 1;
-            
+
             println!("Failed request {}: {}", request_id, reason);
         }
-        
+
         Ok(())
     }
-    
+
     /// Get the current batch
     pub fn get_current_batch(&self) -> Option<&RequestBatch> {
         self.current_batch.as_ref()
     }
-    
+
     /// Clear the current batch
     pub fn clear_current_batch(&mut self) {
         self.current_batch = None;
     }
-    
+
     /// Get pending requests count
     pub fn pending_count(&self) -> usize {
         self.pending_requests.len()
     }
-    
+
     /// Get active requests count
     pub fn active_count(&self) -> usize {
         self.active_requests.len()
     }
-    
+
     /// Get scheduler statistics
     pub fn get_stats(&self) -> &SchedulerStats {
         &self.stats
     }
-    
+
     /// Get all active requests
     pub fn get_active_requests(&self) -> Vec<&Request> {
         self.active_requests.values().collect()
     }
-    
+
     /// Get completed requests
     pub fn get_completed_requests(&self) -> Vec<&Request> {
         self.completed_requests.iter().collect()
     }
-    
+
     /// Update request state
-    pub fn update_request_state(&mut self, request_id: u32, new_state: RequestState) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn update_request_state(
+        &mut self,
+        request_id: u32,
+        new_state: RequestState,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(request) = self.active_requests.get_mut(&request_id) {
             let state_check = new_state.clone(); // Clone for the matches! check
             request.state = new_state;
-            if matches!(state_check, RequestState::Prefilling | RequestState::Decoding) && request.started_at.is_none() {
+            if matches!(
+                state_check,
+                RequestState::Prefilling | RequestState::Decoding
+            ) && request.started_at.is_none()
+            {
                 request.started_at = Some(Instant::now());
             }
         }
 
         Ok(())
     }
-    
+
     /// Get request by ID
     pub fn get_request(&self, request_id: u32) -> Option<&Request> {
         self.active_requests.get(&request_id)
@@ -443,7 +466,14 @@ impl SchedulerStats {
 
 impl std::fmt::Display for SchedulerStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Scheduler Stats: {} total, {} active, {} completed, {} failed, {} batches",
-               self.total_requests, self.active_requests, self.completed_requests, self.failed_requests, self.batches_created)
+        write!(
+            f,
+            "Scheduler Stats: {} total, {} active, {} completed, {} failed, {} batches",
+            self.total_requests,
+            self.active_requests,
+            self.completed_requests,
+            self.failed_requests,
+            self.batches_created
+        )
     }
 }

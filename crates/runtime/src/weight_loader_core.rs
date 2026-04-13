@@ -3,16 +3,16 @@
 //! This module provides unified weight loading that converts any supported
 //! weight format into our core tensor abstraction.
 
-use crate::tensor_core::{Tensor, Device, DataType, CpuStorage, CandleStorage};
-use crate::model_core::{ModelWeights, WeightMetadata, WeightFormat};
+use crate::model_core::{ModelWeights, WeightFormat, WeightMetadata};
+use crate::tensor_core::{CandleStorage, CpuStorage, DataType, Device, Tensor};
+use anyhow::{anyhow, Result};
+use candle_core::quantized::gguf_file;
+use candle_core::quantized::QMatMul;
+use safetensors::SafeTensors;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use anyhow::{Result, anyhow};
-use serde_json::Value;
-use safetensors::SafeTensors;
-use candle_core::quantized::gguf_file;
-use candle_core::quantized::QMatMul;
 
 /// Configuration extracted from GGUF metadata
 #[derive(Debug, Clone, Default)]
@@ -47,21 +47,26 @@ impl GGUFModelConfig {
             .or_else(|| extract_gguf_u32(metadata, "llama.embedding_length"))
             .unwrap_or(4096) as usize;
 
-        let intermediate_size = extract_gguf_u32(metadata, &format!("{}.feed_forward_length", arch_prefix))
-            .or_else(|| extract_gguf_u32(metadata, "llama.feed_forward_length"))
-            .unwrap_or(11008) as usize;
+        let intermediate_size =
+            extract_gguf_u32(metadata, &format!("{}.feed_forward_length", arch_prefix))
+                .or_else(|| extract_gguf_u32(metadata, "llama.feed_forward_length"))
+                .unwrap_or(11008) as usize;
 
         let num_hidden_layers = extract_gguf_u32(metadata, &format!("{}.block_count", arch_prefix))
             .or_else(|| extract_gguf_u32(metadata, "llama.block_count"))
             .unwrap_or(32) as usize;
 
-        let num_attention_heads = extract_gguf_u32(metadata, &format!("{}.attention.head_count", arch_prefix))
-            .or_else(|| extract_gguf_u32(metadata, "llama.attention.head_count"))
-            .unwrap_or(32) as usize;
+        let num_attention_heads =
+            extract_gguf_u32(metadata, &format!("{}.attention.head_count", arch_prefix))
+                .or_else(|| extract_gguf_u32(metadata, "llama.attention.head_count"))
+                .unwrap_or(32) as usize;
 
-        let num_key_value_heads = extract_gguf_u32(metadata, &format!("{}.attention.head_count_kv", arch_prefix))
-            .or_else(|| extract_gguf_u32(metadata, "llama.attention.head_count_kv"))
-            .unwrap_or(num_attention_heads as u32) as usize;
+        let num_key_value_heads = extract_gguf_u32(
+            metadata,
+            &format!("{}.attention.head_count_kv", arch_prefix),
+        )
+        .or_else(|| extract_gguf_u32(metadata, "llama.attention.head_count_kv"))
+        .unwrap_or(num_attention_heads as u32) as usize;
 
         let head_dim = if num_attention_heads > 0 {
             hidden_size / num_attention_heads
@@ -69,17 +74,21 @@ impl GGUFModelConfig {
             128
         };
 
-        let rms_norm_eps = extract_gguf_f32(metadata, &format!("{}.attention.layer_norm_rms_epsilon", arch_prefix))
-            .or_else(|| extract_gguf_f32(metadata, "llama.attention.layer_norm_rms_epsilon"))
-            .unwrap_or(1e-5);
+        let rms_norm_eps = extract_gguf_f32(
+            metadata,
+            &format!("{}.attention.layer_norm_rms_epsilon", arch_prefix),
+        )
+        .or_else(|| extract_gguf_f32(metadata, "llama.attention.layer_norm_rms_epsilon"))
+        .unwrap_or(1e-5);
 
         let rope_theta = extract_gguf_f32(metadata, &format!("{}.rope.freq_base", arch_prefix))
             .or_else(|| extract_gguf_f32(metadata, "llama.rope.freq_base"))
             .unwrap_or(10000.0);
 
-        let max_position_embeddings = extract_gguf_u32(metadata, &format!("{}.context_length", arch_prefix))
-            .or_else(|| extract_gguf_u32(metadata, "llama.context_length"))
-            .unwrap_or(2048) as usize;
+        let max_position_embeddings =
+            extract_gguf_u32(metadata, &format!("{}.context_length", arch_prefix))
+                .or_else(|| extract_gguf_u32(metadata, "llama.context_length"))
+                .unwrap_or(2048) as usize;
 
         Self {
             architecture,
@@ -160,10 +169,14 @@ impl GGUFTokenizer {
 }
 
 /// Extract string array from GGUF metadata
-fn extract_gguf_string_array(metadata: &HashMap<String, gguf_file::Value>, key: &str) -> Option<Vec<String>> {
+fn extract_gguf_string_array(
+    metadata: &HashMap<String, gguf_file::Value>,
+    key: &str,
+) -> Option<Vec<String>> {
     match metadata.get(key) {
         Some(gguf_file::Value::Array(arr)) => {
-            let strings: Vec<String> = arr.iter()
+            let strings: Vec<String> = arr
+                .iter()
                 .filter_map(|v| {
                     if let gguf_file::Value::String(s) = v {
                         Some(s.clone())
@@ -172,45 +185,61 @@ fn extract_gguf_string_array(metadata: &HashMap<String, gguf_file::Value>, key: 
                     }
                 })
                 .collect();
-            if strings.is_empty() { None } else { Some(strings) }
+            if strings.is_empty() {
+                None
+            } else {
+                Some(strings)
+            }
         }
         _ => None,
     }
 }
 
 /// Extract i32 array from GGUF metadata
-fn extract_gguf_i32_array(metadata: &HashMap<String, gguf_file::Value>, key: &str) -> Option<Vec<i32>> {
+fn extract_gguf_i32_array(
+    metadata: &HashMap<String, gguf_file::Value>,
+    key: &str,
+) -> Option<Vec<i32>> {
     match metadata.get(key) {
         Some(gguf_file::Value::Array(arr)) => {
-            let nums: Vec<i32> = arr.iter()
-                .filter_map(|v| {
-                    match v {
-                        gguf_file::Value::I32(n) => Some(*n),
-                        gguf_file::Value::U32(n) => Some(*n as i32),
-                        _ => None,
-                    }
+            let nums: Vec<i32> = arr
+                .iter()
+                .filter_map(|v| match v {
+                    gguf_file::Value::I32(n) => Some(*n),
+                    gguf_file::Value::U32(n) => Some(*n as i32),
+                    _ => None,
                 })
                 .collect();
-            if nums.is_empty() { None } else { Some(nums) }
+            if nums.is_empty() {
+                None
+            } else {
+                Some(nums)
+            }
         }
         _ => None,
     }
 }
 
 /// Extract f32 array from GGUF metadata
-fn extract_gguf_f32_array(metadata: &HashMap<String, gguf_file::Value>, key: &str) -> Option<Vec<f32>> {
+fn extract_gguf_f32_array(
+    metadata: &HashMap<String, gguf_file::Value>,
+    key: &str,
+) -> Option<Vec<f32>> {
     match metadata.get(key) {
         Some(gguf_file::Value::Array(arr)) => {
-            let nums: Vec<f32> = arr.iter()
-                .filter_map(|v| {
-                    match v {
-                        gguf_file::Value::F32(n) => Some(*n),
-                        gguf_file::Value::F64(n) => Some(*n as f32),
-                        _ => None,
-                    }
+            let nums: Vec<f32> = arr
+                .iter()
+                .filter_map(|v| match v {
+                    gguf_file::Value::F32(n) => Some(*n),
+                    gguf_file::Value::F64(n) => Some(*n as f32),
+                    _ => None,
                 })
                 .collect();
-            if nums.is_empty() { None } else { Some(nums) }
+            if nums.is_empty() {
+                None
+            } else {
+                Some(nums)
+            }
         }
         _ => None,
     }
@@ -311,7 +340,12 @@ impl SafeTensorsWeightLoader {
 
         // Iterate through all tensors in the file
         for (name, tensor_view) in safetensors.tensors() {
-            println!("  Loading tensor: {} {:?} {:?}", name, tensor_view.shape(), tensor_view.dtype());
+            println!(
+                "  Loading tensor: {} {:?} {:?}",
+                name,
+                tensor_view.shape(),
+                tensor_view.dtype()
+            );
 
             // Convert dtype
             let dtype = self.convert_dtype(tensor_view.dtype())?;
@@ -323,12 +357,7 @@ impl SafeTensorsWeightLoader {
             let storage = Arc::new(CpuStorage::new(tensor_data.to_vec(), Device::CPU));
 
             // Create our Tensor
-            let tensor = Tensor::new(
-                tensor_view.shape().to_vec(),
-                dtype,
-                Device::CPU,
-                storage
-            );
+            let tensor = Tensor::new(tensor_view.shape().to_vec(), dtype, Device::CPU, storage);
 
             tensors.insert(name.to_string(), tensor);
         }
@@ -352,7 +381,10 @@ impl WeightLoader for SafeTensorsWeightLoader {
             for entry in entries {
                 let entry = entry?;
                 let file_path = entry.path();
-                if file_path.extension().map_or(false, |ext| ext == "safetensors") {
+                if file_path
+                    .extension()
+                    .map_or(false, |ext| ext == "safetensors")
+                {
                     let tensors = self.load_safetensors_file(&file_path)?;
                     all_tensors.extend(tensors);
                 }
@@ -360,16 +392,18 @@ impl WeightLoader for SafeTensorsWeightLoader {
         }
 
         if all_tensors.is_empty() {
-            return Err(anyhow::anyhow!("No SafeTensors files found in {}", path.display()));
+            return Err(anyhow::anyhow!(
+                "No SafeTensors files found in {}",
+                path.display()
+            ));
         }
 
         // Calculate total parameters
-        let total_params: usize = all_tensors.values()
-            .map(|tensor| tensor.numel())
-            .sum();
+        let total_params: usize = all_tensors.values().map(|tensor| tensor.numel()).sum();
 
         // Determine primary dtype
-        let primary_dtype = all_tensors.values()
+        let primary_dtype = all_tensors
+            .values()
             .next()
             .map(|t| match t.dtype() {
                 DataType::Float32 => "float32",
@@ -378,6 +412,7 @@ impl WeightLoader for SafeTensorsWeightLoader {
                 DataType::Int32 => "int32",
                 DataType::Int64 => "int64",
                 DataType::Int8 => "int8",
+                DataType::Int4 => "int4",
                 DataType::Bool => "bool",
             })
             .unwrap_or("unknown");
@@ -401,7 +436,11 @@ impl WeightLoader for SafeTensorsWeightLoader {
             // Check if directory contains SafeTensors files
             if let Ok(entries) = std::fs::read_dir(path) {
                 for entry in entries.flatten() {
-                    if entry.path().extension().map_or(false, |ext| ext == "safetensors") {
+                    if entry
+                        .path()
+                        .extension()
+                        .map_or(false, |ext| ext == "safetensors")
+                    {
                         return true;
                     }
                 }
@@ -427,12 +466,7 @@ impl WeightLoader for PyTorchWeightLoader {
 
         // Create placeholder tensors
         let storage = Arc::new(CpuStorage::zeros(2048 * 4));
-        let tensor = Tensor::new(
-            vec![512, 4],
-            DataType::Float32,
-            Device::CPU,
-            storage
-        );
+        let tensor = Tensor::new(vec![512, 4], DataType::Float32, Device::CPU, storage);
 
         tensors.insert("pytorch_weight".to_string(), tensor);
 
@@ -448,12 +482,13 @@ impl WeightLoader for PyTorchWeightLoader {
 
     fn supports(&self, path: &Path) -> bool {
         if path.is_file() {
-            return path.extension().map_or(false, |ext| ext == "bin" || ext == "pt");
+            return path
+                .extension()
+                .map_or(false, |ext| ext == "bin" || ext == "pt");
         }
 
         if path.is_dir() {
-            return path.join("pytorch_model.bin").exists() ||
-                   path.join("model.pt").exists();
+            return path.join("pytorch_model.bin").exists() || path.join("model.pt").exists();
         }
 
         false
@@ -510,23 +545,33 @@ impl WeightLoader for GGUFWeightLoader {
         let content = gguf_file::Content::read(&mut file)
             .map_err(|e| anyhow!("Failed to read GGUF file: {}", e))?;
 
-        println!("GGUF file loaded - {} tensors, {} metadata keys",
+        println!(
+            "GGUF file loaded - {} tensors, {} metadata keys",
             content.tensor_infos.len(),
-            content.metadata.len());
+            content.metadata.len()
+        );
 
         // Extract model config from GGUF metadata
         let gguf_config = GGUFModelConfig::from_gguf_metadata(&content.metadata);
 
         println!("Model architecture: {}", gguf_config.architecture);
-        println!("Model config: vocab_size={}, hidden_size={}, num_layers={}, heads={}, kv_heads={}",
-            gguf_config.vocab_size, gguf_config.hidden_size, gguf_config.num_hidden_layers,
-            gguf_config.num_attention_heads, gguf_config.num_key_value_heads);
+        println!(
+            "Model config: vocab_size={}, hidden_size={}, num_layers={}, heads={}, kv_heads={}",
+            gguf_config.vocab_size,
+            gguf_config.hidden_size,
+            gguf_config.num_hidden_layers,
+            gguf_config.num_attention_heads,
+            gguf_config.num_key_value_heads
+        );
 
         // Extract tokenizer from GGUF metadata
         let gguf_tokenizer = GGUFTokenizer::from_gguf_metadata(&content.metadata);
         if let Some(ref tok) = gguf_tokenizer {
-            println!("Tokenizer extracted: vocab_size={}, model_type={}",
-                tok.vocab_size(), tok.model_type);
+            println!(
+                "Tokenizer extracted: vocab_size={}, model_type={}",
+                tok.vocab_size(),
+                tok.model_type
+            );
         } else {
             println!("No tokenizer data found in GGUF metadata");
         }
@@ -536,13 +581,15 @@ impl WeightLoader for GGUFWeightLoader {
         let mut tensors = HashMap::new();
         let mut quantized_tensors: HashMap<String, Arc<QMatMul>> = HashMap::new();
         #[cfg(feature = "simd")]
-        let mut simd_quantized: HashMap<String, Arc<crate::simd::quant::QuantizedTensor>> = HashMap::new();
+        let mut simd_quantized: HashMap<String, Arc<crate::simd::quant::QuantizedTensor>> =
+            HashMap::new();
         let mut total_params = 0usize;
         let mut quantized_count = 0usize;
 
         for (name, tensor_info) in content.tensor_infos.iter() {
             // Read the quantized tensor
-            let qtensor = tensor_info.read(&mut file, content.tensor_data_offset, &device)
+            let qtensor = tensor_info
+                .read(&mut file, content.tensor_data_offset, &device)
                 .map_err(|e| anyhow!("Failed to read tensor '{}': {}", name, e))?;
 
             // Convert GGUF tensor name to HuggingFace-style name
@@ -551,7 +598,8 @@ impl WeightLoader for GGUFWeightLoader {
             // Determine if this is a weight tensor that should stay quantized
             // Quantize: q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj, lm_head
             // Don't quantize: embeddings (frequent random access), norms (small 1D tensors)
-            let is_weight_tensor = hf_name.contains("_proj.weight") || hf_name.contains("lm_head.weight");
+            let is_weight_tensor =
+                hf_name.contains("_proj.weight") || hf_name.contains("lm_head.weight");
 
             if is_weight_tensor {
                 // Keep as QMatMul for efficient quantized inference - NO F32 fallback
@@ -576,7 +624,8 @@ impl WeightLoader for GGUFWeightLoader {
                 // Don't insert into tensors map - quantized only!
             } else {
                 // Embeddings, norms - dequantize to F32 (small, frequently accessed)
-                let candle_tensor = qtensor.dequantize(&device)
+                let candle_tensor = qtensor
+                    .dequantize(&device)
                     .map_err(|e| anyhow!("Failed to dequantize tensor '{}': {}", name, e))?;
                 total_params += candle_tensor.elem_count();
                 let tensor = Tensor::from_candle(candle_tensor);
@@ -585,11 +634,20 @@ impl WeightLoader for GGUFWeightLoader {
         }
 
         #[cfg(feature = "simd")]
-        println!("Loaded {} F32 tensors + {} quantized weights + {} SIMD quantized, {} total parameters",
-            tensors.len(), quantized_count, simd_quantized.len(), total_params);
+        println!(
+            "Loaded {} F32 tensors + {} quantized weights + {} SIMD quantized, {} total parameters",
+            tensors.len(),
+            quantized_count,
+            simd_quantized.len(),
+            total_params
+        );
         #[cfg(not(feature = "simd"))]
-        println!("Loaded {} F32 tensors + {} quantized weights, {} total parameters",
-            tensors.len(), quantized_count, total_params);
+        println!(
+            "Loaded {} F32 tensors + {} quantized weights, {} total parameters",
+            tensors.len(),
+            quantized_count,
+            total_params
+        );
 
         let metadata = WeightMetadata {
             architecture: gguf_config.architecture.clone(),
@@ -600,11 +658,22 @@ impl WeightLoader for GGUFWeightLoader {
 
         #[cfg(feature = "simd")]
         return Ok(ModelWeights::with_simd_quantized(
-            tensors, metadata, gguf_config, gguf_tokenizer, quantized_tensors, simd_quantized
+            tensors,
+            metadata,
+            gguf_config,
+            gguf_tokenizer,
+            quantized_tensors,
+            simd_quantized,
         ));
 
         #[cfg(not(feature = "simd"))]
-        Ok(ModelWeights::with_quantized(tensors, metadata, gguf_config, gguf_tokenizer, quantized_tensors))
+        Ok(ModelWeights::with_quantized(
+            tensors,
+            metadata,
+            gguf_config,
+            gguf_tokenizer,
+            quantized_tensors,
+        ))
     }
 
     fn supports(&self, path: &Path) -> bool {
@@ -637,7 +706,8 @@ impl ConfigLoader {
     /// Load model configuration from config.json
     pub fn load_config(&self, model_path: &Path) -> Result<Value> {
         let config_path = if model_path.is_file() {
-            model_path.parent()
+            model_path
+                .parent()
                 .ok_or_else(|| anyhow::anyhow!("No parent directory"))?
                 .join("config.json")
         } else {
@@ -645,7 +715,10 @@ impl ConfigLoader {
         };
 
         if !config_path.exists() {
-            return Err(anyhow::anyhow!("config.json not found at {}", config_path.display()));
+            return Err(anyhow::anyhow!(
+                "config.json not found at {}",
+                config_path.display()
+            ));
         }
 
         let content = std::fs::read_to_string(&config_path)?;
@@ -671,7 +744,9 @@ impl ConfigLoader {
             return Ok(arch.to_string());
         }
 
-        Err(anyhow::anyhow!("Could not determine model architecture from config"))
+        Err(anyhow::anyhow!(
+            "Could not determine model architecture from config"
+        ))
     }
 }
 
@@ -733,25 +808,21 @@ fn extract_gguf_string(metadata: &HashMap<String, gguf_file::Value>, key: &str) 
 
 /// Extract a u32 value from GGUF metadata
 fn extract_gguf_u32(metadata: &HashMap<String, gguf_file::Value>, key: &str) -> Option<u32> {
-    metadata.get(key).and_then(|v| {
-        match v {
-            gguf_file::Value::U32(n) => Some(*n),
-            gguf_file::Value::I32(n) => Some(*n as u32),
-            gguf_file::Value::U64(n) => Some(*n as u32),
-            gguf_file::Value::I64(n) => Some(*n as u32),
-            _ => None,
-        }
+    metadata.get(key).and_then(|v| match v {
+        gguf_file::Value::U32(n) => Some(*n),
+        gguf_file::Value::I32(n) => Some(*n as u32),
+        gguf_file::Value::U64(n) => Some(*n as u32),
+        gguf_file::Value::I64(n) => Some(*n as u32),
+        _ => None,
     })
 }
 
 /// Extract a f32 value from GGUF metadata
 fn extract_gguf_f32(metadata: &HashMap<String, gguf_file::Value>, key: &str) -> Option<f32> {
-    metadata.get(key).and_then(|v| {
-        match v {
-            gguf_file::Value::F32(n) => Some(*n),
-            gguf_file::Value::F64(n) => Some(*n as f32),
-            _ => None,
-        }
+    metadata.get(key).and_then(|v| match v {
+        gguf_file::Value::F32(n) => Some(*n),
+        gguf_file::Value::F64(n) => Some(*n as f32),
+        _ => None,
     })
 }
 

@@ -1,10 +1,13 @@
 use crate::{
-    InferenceEngine, InferenceRequest, InferenceResponse, ResponseStream, StreamSender,
+    InferenceRequest, InferenceResponse, ResponseStream, StreamSender,
     BatchProcessor, BatchOptimizer, InferenceMetrics, PerformanceCollector,
     types::*,
 };
+use crate::InferenceEngine;
 use async_trait::async_trait;
 use futures::future::join_all;
+use runtime::model_core::{GenerationConfig, ModelRunner};
+use runtime::tokenizer::Tokenizer;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock, Semaphore};
@@ -15,10 +18,15 @@ pub struct UniLLMInferenceEngine {
     /// Configuration
     config: EngineConfig,
 
+    /// Model runner for actual inference
+    model: Arc<dyn ModelRunner>,
+
+    /// Tokenizer for encoding prompts
+    tokenizer: Tokenizer,
+
     /// Component integration
     kv_cache: Arc<kv::HybridKVCache>,
     scheduler: Arc<scheduler::IntelligentScheduler>,
-    // kernel_framework: Arc<kernels::KernelFramework>, // Temporarily disabled
 
     /// Request processing
     request_queue: Arc<RwLock<RequestQueue>>,
@@ -143,8 +151,10 @@ impl RequestQueue {
 }
 
 impl UniLLMInferenceEngine {
-    /// Create a new inference engine
+    /// Create a new inference engine with a model
     pub async fn new(
+        model: Arc<dyn ModelRunner>,
+        tokenizer: Tokenizer,
         kv_cache: Arc<kv::HybridKVCache>,
         scheduler: Arc<scheduler::IntelligentScheduler>,
     ) -> InferenceResult<Self> {
@@ -164,9 +174,10 @@ impl UniLLMInferenceEngine {
 
         let engine = Self {
             config,
+            model,
+            tokenizer,
             kv_cache,
             scheduler,
-            // kernel_framework,  // temporarily disabled
             request_queue: Arc::new(RwLock::new(RequestQueue::new())),
             batch_processor,
             batch_optimizer,
@@ -178,6 +189,53 @@ impl UniLLMInferenceEngine {
         };
 
         Ok(engine)
+    }
+
+    /// Create a new inference engine for CPU-mode inference.
+    /// Constructs the KV cache and scheduler internally with CPU-compatible defaults.
+    pub async fn new_cpu(
+        model: Arc<dyn ModelRunner>,
+        tokenizer: Tokenizer,
+        max_concurrent_requests: usize,
+    ) -> InferenceResult<Self> {
+        let kv_cache = Arc::new(kv::HybridKVCache::new(
+            10000,
+            100000,
+            16,
+            16,
+            0x0,
+        ));
+
+        let scheduler = Arc::new(
+            scheduler::IntelligentScheduler::new_cpu(max_concurrent_requests)
+                .map_err(|e| InferenceError::Internal(format!("Scheduler init failed: {}", e)))?,
+        );
+
+        let mut config = EngineConfig::default();
+        config.max_concurrent_requests = max_concurrent_requests;
+
+        let batch_processor = Arc::new(BatchProcessor::new(config.batch_config.clone()));
+        let batch_optimizer = Arc::new(BatchOptimizer::new());
+        let metrics_collector = Arc::new(PerformanceCollector::new());
+        let performance_monitor = Arc::new(Mutex::new(InferenceMetrics::new()));
+        let request_semaphore = Arc::new(Semaphore::new(config.max_concurrent_requests));
+        let shutdown_signal = Arc::new(tokio::sync::Notify::new());
+
+        Ok(Self {
+            config,
+            model,
+            tokenizer,
+            kv_cache,
+            scheduler,
+            request_queue: Arc::new(RwLock::new(RequestQueue::new())),
+            batch_processor,
+            batch_optimizer,
+            metrics_collector,
+            performance_monitor,
+            request_semaphore,
+            shutdown_signal,
+            running: Arc::new(RwLock::new(false)),
+        })
     }
 
     /// Start the inference engine
@@ -318,50 +376,61 @@ impl UniLLMInferenceEngine {
         })
     }
 
-    /// Execute generation with optimized kernels
-    async fn execute_generation(&self, request: &InferenceRequest, schedule_info: &ScheduleInfo) -> InferenceResult<GenerationResult> {
-        // Get optimized kernel configuration (temporarily disabled)
-        // let workload = kernels::WorkloadCharacteristics {
-        //     batch_size: 1, // Single request for now
-        //     sequence_length: request.prompt.len(),
-        //     model_size: self.config.model_config.model_name.clone(),
-        //     attention_type: match request.metadata.attention_mechanism.unwrap_or(AttentionMechanism::HybridCacheAttention) {
-        //         AttentionMechanism::MultiHead => "multi_head".to_string(),
-        //         AttentionMechanism::GroupedQuery => "grouped_query".to_string(),
-        //         AttentionMechanism::MultiQuery => "multi_query".to_string(),
-        //         _ => "hybrid_cache".to_string(),
-        //     },
-        //     cache_pattern: "prefix_sharing".to_string(), // Based on cache analysis
-        //     memory_pressure: schedule_info.memory_pressure,
-        // };
-
-        // let optimization_config = self.kernel_framework.get_optimized_configuration(&workload)
-        //     .map_err(|e| InferenceError::GpuError(format!("Kernel optimization failed: {}", e)))?;
-
-        // Simulate generation (in real implementation, this would run actual model inference)
+    /// Execute generation with the loaded model
+    async fn execute_generation(&self, request: &InferenceRequest, _schedule_info: &ScheduleInfo) -> InferenceResult<GenerationResult> {
         let generation_start = Instant::now();
 
-        // Mock generation with realistic timing
-        let estimated_tokens = request.sampling_params.max_tokens.unwrap_or(100);
-        let generation_time_per_token = Duration::from_millis(10); // 100 tokens/second
-        tokio::time::sleep(generation_time_per_token * estimated_tokens as u32).await;
+        let max_tokens = request.sampling_params.max_tokens.unwrap_or(100);
+        let generation_config = GenerationConfig {
+            max_new_tokens: max_tokens,
+            temperature: request.sampling_params.temperature,
+            top_p: request.sampling_params.top_p,
+            top_k: request.sampling_params.top_k,
+            min_p: 0.0,
+            do_sample: request.sampling_params.temperature > 0.0,
+            repetition_penalty: request.sampling_params.repetition_penalty,
+            frequency_penalty: request.sampling_params.frequency_penalty,
+            presence_penalty: request.sampling_params.presence_penalty,
+            stop_sequences: request.sampling_params.stop_sequences.clone(),
+            eos_token_id: 2,
+            pad_token_id: 0,
+        };
+
+        let prompt_tokens: Vec<u32> = self.tokenizer.encode(&request.prompt);
+        let mut generated_text = String::new();
+        let mut generated_tokens = Vec::new();
+
+        match self.model.generate_streaming(
+            &prompt_tokens,
+            &generation_config,
+            &mut |token_id, text| {
+                generated_tokens.push(token_id);
+                generated_text.push_str(text);
+                true
+            },
+        ) {
+            Ok(tokens) => {
+                generated_tokens = tokens;
+            }
+            Err(e) => {
+                return Err(InferenceError::ProcessingFailed(format!("Model generation failed: {}", e)));
+            }
+        }
 
         let generation_time = generation_start.elapsed();
-
-        // Build generation result
-        let generated_text = format!("Generated response for: {}", request.prompt.chars().take(50).collect::<String>());
+        let num_tokens = generated_tokens.len().max(1);
 
         Ok(GenerationResult {
             text: generated_text,
-            tokens: vec![], // Would be populated in real implementation
+            tokens: vec![],
             stats: GenerationStats {
-                prompt_tokens: request.prompt.split_whitespace().count(),
-                completion_tokens: estimated_tokens,
-                total_tokens: request.prompt.split_whitespace().count() + estimated_tokens,
+                prompt_tokens: prompt_tokens.len(),
+                completion_tokens: num_tokens,
+                total_tokens: prompt_tokens.len() + num_tokens,
                 time_to_first_token_ms: 50.0,
-                tokens_per_second: estimated_tokens as f32 / generation_time.as_secs_f32(),
-                total_time_ms: generation_time.as_millis() as f32,
-                cache_hit_rate: 0.7, // From cache analysis
+                tokens_per_second: num_tokens as f64 / generation_time.as_secs_f64().max(0.001),
+                total_time_ms: generation_time.as_millis() as f64,
+                cache_hit_rate: 0.7,
                 memory_usage_mb: 1024.0,
             },
             cache_info: CacheInfo {

@@ -3,15 +3,17 @@
 //! This scheduler integrates directly with our GPU memory management system
 //! to achieve superior performance through cache-aware scheduling policies.
 
-use std::collections::{HashMap, VecDeque, BinaryHeap};
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use std::cmp::Ordering;
 
-use crate::{Request, RequestBatch, RequestPriority, RequestState, SchedulerStats, BatchAnalysis};
+use crate::{BatchAnalysis, Request, RequestBatch, RequestPriority, RequestState, SchedulerStats};
 
 // Import our GPU-integrated cache system
-use kv::{GpuIntegratedCache, GpuBackendType, TokenId, CacheHandle, CacheTier, GpuIntegratedCacheStats};
+use kv::{
+    CacheHandle, CacheTier, GpuBackendType, GpuIntegratedCache, GpuIntegratedCacheStats, TokenId,
+};
 
 /// Intelligent scheduling policies
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -32,13 +34,12 @@ pub enum SchedulingPolicy {
 #[derive(Debug, Clone)]
 pub struct RequestAnalysis {
     pub request_id: u32,
-    pub cache_hit_potential: f64,       // 0.0-1.0, likelihood of cache hits
-    pub prefix_sharing_score: f64,      // 0.0-1.0, prefix sharing potential
-    pub memory_requirement: usize,      // Estimated GPU memory needed
-    pub priority_boost: f64,           // Priority adjustment based on analysis
-    pub estimated_latency: Duration,    // Predicted processing latency
+    pub cache_hit_potential: f64,    // 0.0-1.0, likelihood of cache hits
+    pub prefix_sharing_score: f64,   // 0.0-1.0, prefix sharing potential
+    pub memory_requirement: usize,   // Estimated GPU memory needed
+    pub priority_boost: f64,         // Priority adjustment based on analysis
+    pub estimated_latency: Duration, // Predicted processing latency
 }
-
 
 /// Cache-aware batch optimizer
 pub struct CacheAwareBatchOptimizer {
@@ -60,7 +61,11 @@ impl CacheAwareBatchOptimizer {
 
     /// Analyze a single request for scheduling optimization
     pub fn analyze_request(&self, request: &Request) -> RequestAnalysis {
-        let tokens: Vec<TokenId> = request.prompt_tokens.iter().map(|&t| t as TokenId).collect();
+        let tokens: Vec<TokenId> = request
+            .prompt_tokens
+            .iter()
+            .map(|&t| t as TokenId)
+            .collect();
 
         // Check cache hit potential by querying our GPU cache
         let cache_hit_potential = if let Ok(gpu_cache) = self.gpu_cache.try_lock() {
@@ -87,14 +92,16 @@ impl CacheAwareBatchOptimizer {
         let priority_boost = match self.policy {
             SchedulingPolicy::CacheAware | SchedulingPolicy::GpuMemoryOptimized => {
                 cache_hit_potential * 0.5 + prefix_sharing_score * 0.3
-            },
+            }
             SchedulingPolicy::LongestPrefixMatch => prefix_sharing_score * 0.7,
             _ => 0.0,
         };
 
         // Predict processing latency
         let estimated_latency = self.performance_predictor.predict_latency(
-            request, cache_hit_potential, memory_requirement
+            request,
+            cache_hit_potential,
+            memory_requirement,
         );
 
         RequestAnalysis {
@@ -108,36 +115,44 @@ impl CacheAwareBatchOptimizer {
     }
 
     /// Optimize batch composition for maximum performance
-    pub fn optimize_batch(&self, requests: &[Request], max_batch_size: usize, max_memory: usize) -> Vec<u32> {
-        let mut analyses: Vec<_> = requests.iter()
-            .map(|r| self.analyze_request(r))
-            .collect();
+    pub fn optimize_batch(
+        &self,
+        requests: &[Request],
+        max_batch_size: usize,
+        max_memory: usize,
+    ) -> Vec<u32> {
+        let mut analyses: Vec<_> = requests.iter().map(|r| self.analyze_request(r)).collect();
 
         match self.policy {
             SchedulingPolicy::FCFS => {
                 // Simple FCFS - take requests in order until limits reached
                 self.optimize_fcfs(&analyses, max_batch_size, max_memory)
-            },
+            }
             SchedulingPolicy::LongestPrefixMatch => {
                 // Group by prefix similarity, prioritize shared prefixes
                 self.optimize_prefix_matching(&analyses, max_batch_size, max_memory)
-            },
+            }
             SchedulingPolicy::CacheAware => {
                 // Prioritize requests with high cache hit potential
                 self.optimize_cache_aware(&analyses, max_batch_size, max_memory)
-            },
+            }
             SchedulingPolicy::GpuMemoryOptimized => {
                 // Balance cache hits with memory efficiency
                 self.optimize_gpu_memory(&analyses, max_batch_size, max_memory)
-            },
+            }
             SchedulingPolicy::AdaptiveML => {
                 // Use ML model to select optimal batch
                 self.optimize_adaptive(&analyses, max_batch_size, max_memory)
-            },
+            }
         }
     }
 
-    fn optimize_fcfs(&self, analyses: &[RequestAnalysis], max_batch_size: usize, max_memory: usize) -> Vec<u32> {
+    fn optimize_fcfs(
+        &self,
+        analyses: &[RequestAnalysis],
+        max_batch_size: usize,
+        max_memory: usize,
+    ) -> Vec<u32> {
         let mut selected = Vec::new();
         let mut total_memory = 0;
 
@@ -153,10 +168,19 @@ impl CacheAwareBatchOptimizer {
         selected
     }
 
-    fn optimize_prefix_matching(&self, analyses: &[RequestAnalysis], max_batch_size: usize, max_memory: usize) -> Vec<u32> {
+    fn optimize_prefix_matching(
+        &self,
+        analyses: &[RequestAnalysis],
+        max_batch_size: usize,
+        max_memory: usize,
+    ) -> Vec<u32> {
         // Sort by prefix sharing score (highest first)
         let mut sorted_analyses = analyses.to_vec();
-        sorted_analyses.sort_by(|a, b| b.prefix_sharing_score.partial_cmp(&a.prefix_sharing_score).unwrap_or(Ordering::Equal));
+        sorted_analyses.sort_by(|a, b| {
+            b.prefix_sharing_score
+                .partial_cmp(&a.prefix_sharing_score)
+                .unwrap_or(Ordering::Equal)
+        });
 
         let mut selected = Vec::new();
         let mut total_memory = 0;
@@ -171,10 +195,19 @@ impl CacheAwareBatchOptimizer {
         selected
     }
 
-    fn optimize_cache_aware(&self, analyses: &[RequestAnalysis], max_batch_size: usize, max_memory: usize) -> Vec<u32> {
+    fn optimize_cache_aware(
+        &self,
+        analyses: &[RequestAnalysis],
+        max_batch_size: usize,
+        max_memory: usize,
+    ) -> Vec<u32> {
         // Sort by cache hit potential (highest first)
         let mut sorted_analyses = analyses.to_vec();
-        sorted_analyses.sort_by(|a, b| b.cache_hit_potential.partial_cmp(&a.cache_hit_potential).unwrap_or(Ordering::Equal));
+        sorted_analyses.sort_by(|a, b| {
+            b.cache_hit_potential
+                .partial_cmp(&a.cache_hit_potential)
+                .unwrap_or(Ordering::Equal)
+        });
 
         let mut selected = Vec::new();
         let mut total_memory = 0;
@@ -189,9 +222,15 @@ impl CacheAwareBatchOptimizer {
         selected
     }
 
-    fn optimize_gpu_memory(&self, analyses: &[RequestAnalysis], max_batch_size: usize, max_memory: usize) -> Vec<u32> {
+    fn optimize_gpu_memory(
+        &self,
+        analyses: &[RequestAnalysis],
+        max_batch_size: usize,
+        max_memory: usize,
+    ) -> Vec<u32> {
         // Score based on cache potential and memory efficiency
-        let mut scored_analyses: Vec<_> = analyses.iter()
+        let mut scored_analyses: Vec<_> = analyses
+            .iter()
             .map(|a| {
                 let cache_score = a.cache_hit_potential * 0.6;
                 let memory_efficiency = 1.0 - (a.memory_requirement as f64 / max_memory as f64);
@@ -217,7 +256,12 @@ impl CacheAwareBatchOptimizer {
         selected
     }
 
-    fn optimize_adaptive(&self, analyses: &[RequestAnalysis], max_batch_size: usize, max_memory: usize) -> Vec<u32> {
+    fn optimize_adaptive(
+        &self,
+        analyses: &[RequestAnalysis],
+        max_batch_size: usize,
+        max_memory: usize,
+    ) -> Vec<u32> {
         // For now, use cache-aware strategy
         // In practice, this would use an ML model trained on historical performance
         self.optimize_cache_aware(analyses, max_batch_size, max_memory)
@@ -234,8 +278,8 @@ impl CacheAwareBatchOptimizer {
         // Estimate GPU memory needed for this request
         // Based on sequence length, model parameters, and KV cache requirements
         let sequence_length = request.total_length();
-        let head_dim = 128;  // Typical attention head dimension
-        let num_heads = 32;  // Typical number of attention heads
+        let head_dim = 128; // Typical attention head dimension
+        let num_heads = 32; // Typical number of attention heads
         let bytes_per_element = 2; // FP16
 
         // KV cache memory: 2 (K+V) * sequence_length * head_dim * num_heads * bytes_per_element
@@ -271,17 +315,26 @@ impl WorkloadAnalyzer {
     }
 
     pub fn get_workload_characteristics(&self) -> WorkloadCharacteristics {
-        let avg_cache_hit_potential = self.request_history.iter()
+        let avg_cache_hit_potential = self
+            .request_history
+            .iter()
             .map(|a| a.cache_hit_potential)
-            .sum::<f64>() / self.request_history.len() as f64;
+            .sum::<f64>()
+            / self.request_history.len() as f64;
 
-        let avg_prefix_sharing = self.request_history.iter()
+        let avg_prefix_sharing = self
+            .request_history
+            .iter()
             .map(|a| a.prefix_sharing_score)
-            .sum::<f64>() / self.request_history.len() as f64;
+            .sum::<f64>()
+            / self.request_history.len() as f64;
 
-        let avg_memory_requirement = self.request_history.iter()
+        let avg_memory_requirement = self
+            .request_history
+            .iter()
             .map(|a| a.memory_requirement)
-            .sum::<usize>() / self.request_history.len();
+            .sum::<usize>()
+            / self.request_history.len();
 
         WorkloadCharacteristics {
             avg_cache_hit_potential,
@@ -298,7 +351,9 @@ impl WorkloadAnalyzer {
         }
 
         let time_span = Duration::from_secs(60); // Look at last minute
-        let recent_count = self.request_history.iter()
+        let recent_count = self
+            .request_history
+            .iter()
             .filter(|a| {
                 // Simplified - would need to track timestamps
                 true
@@ -328,21 +383,26 @@ impl PerformancePredictor {
         let mut baseline_latencies = HashMap::new();
 
         // Initialize with some baseline estimates (would be learned from data)
-        baseline_latencies.insert(128, Duration::from_millis(10));   // Short sequences
-        baseline_latencies.insert(512, Duration::from_millis(25));   // Medium sequences
-        baseline_latencies.insert(2048, Duration::from_millis(80));  // Long sequences
+        baseline_latencies.insert(128, Duration::from_millis(10)); // Short sequences
+        baseline_latencies.insert(512, Duration::from_millis(25)); // Medium sequences
+        baseline_latencies.insert(2048, Duration::from_millis(80)); // Long sequences
         baseline_latencies.insert(8192, Duration::from_millis(300)); // Very long sequences
 
-        Self {
-            baseline_latencies,
-        }
+        Self { baseline_latencies }
     }
 
-    pub fn predict_latency(&self, request: &Request, cache_hit_potential: f64, memory_requirement: usize) -> Duration {
+    pub fn predict_latency(
+        &self,
+        request: &Request,
+        cache_hit_potential: f64,
+        memory_requirement: usize,
+    ) -> Duration {
         let sequence_length = request.total_length();
 
         // Find closest baseline
-        let baseline_latency = self.baseline_latencies.iter()
+        let baseline_latency = self
+            .baseline_latencies
+            .iter()
             .min_by_key(|(len, _)| (**len as isize - sequence_length as isize).abs())
             .map(|(_, latency)| *latency)
             .unwrap_or(Duration::from_millis(50));
@@ -423,7 +483,12 @@ impl IntelligentScheduler {
     }
 
     /// Add a new request with GPU cache integration
-    pub fn add_request(&mut self, prompt_tokens: Vec<u32>, max_output_length: usize, priority: RequestPriority) -> u32 {
+    pub fn add_request(
+        &mut self,
+        prompt_tokens: Vec<u32>,
+        max_output_length: usize,
+        priority: RequestPriority,
+    ) -> u32 {
         let request_id = self.next_request_id;
         self.next_request_id += 1;
 
@@ -435,14 +500,17 @@ impl IntelligentScheduler {
         // Store analysis for later use (could extend Request struct)
         // For now, just track stats
         self.stats.total_requests += 1;
-        self.stats.avg_cache_hit_potential =
-            (self.stats.avg_cache_hit_potential * (self.stats.total_requests - 1) as f64 + analysis.cache_hit_potential)
+        self.stats.avg_cache_hit_potential = (self.stats.avg_cache_hit_potential
+            * (self.stats.total_requests - 1) as f64
+            + analysis.cache_hit_potential)
             / self.stats.total_requests as f64;
 
         self.pending_requests.push_back(request);
 
-        println!("Added request {} with cache hit potential: {:.2}, prefix score: {:.2}",
-                 request_id, analysis.cache_hit_potential, analysis.prefix_sharing_score);
+        println!(
+            "Added request {} with cache hit potential: {:.2}, prefix score: {:.2}",
+            request_id, analysis.cache_hit_potential, analysis.prefix_sharing_score
+        );
 
         request_id
     }
@@ -463,7 +531,7 @@ impl IntelligentScheduler {
         let selected_ids = self.batch_optimizer.optimize_batch(
             &requests_slice,
             self.max_batch_size,
-            self.max_gpu_memory
+            self.max_gpu_memory,
         );
 
         if selected_ids.is_empty() {
@@ -505,7 +573,10 @@ impl IntelligentScheduler {
         let batch_formation_time = start_time.elapsed();
         self.stats.batches_created += 1;
         self.stats.batch_formation_time = batch_formation_time;
-        self.stats.avg_batch_size = (self.stats.avg_batch_size * (self.stats.batches_created - 1) as f64 + batch.size() as f64) / self.stats.batches_created as f64;
+        self.stats.avg_batch_size = (self.stats.avg_batch_size
+            * (self.stats.batches_created - 1) as f64
+            + batch.size() as f64)
+            / self.stats.batches_created as f64;
 
         // Try to prefetch GPU memory for the batch
         if let Ok(mut gpu_cache) = self.gpu_cache.try_lock() {
@@ -513,8 +584,13 @@ impl IntelligentScheduler {
             // gpu_cache.prefetch_batch_memory(&batch);
         }
 
-        println!("Created optimal batch {} with {} requests in {:.2}ms (policy: {:?})",
-                 batch_id, batch.size(), batch_formation_time.as_secs_f64() * 1000.0, self.current_policy);
+        println!(
+            "Created optimal batch {} with {} requests in {:.2}ms (policy: {:?})",
+            batch_id,
+            batch.size(),
+            batch_formation_time.as_secs_f64() * 1000.0,
+            self.current_policy
+        );
 
         Some(batch)
     }
@@ -528,14 +604,17 @@ impl IntelligentScheduler {
 
         // Evaluate current policy performance
         let current_performance = self.calculate_policy_performance();
-        self.policy_performance.insert(self.current_policy, current_performance);
+        self.policy_performance
+            .insert(self.current_policy, current_performance);
 
         // Consider switching to a different policy
         let best_policy = self.select_best_policy();
 
         if best_policy != self.current_policy {
-            println!("Switching scheduling policy from {:?} to {:?} (performance: {:.3})",
-                     self.current_policy, best_policy, current_performance);
+            println!(
+                "Switching scheduling policy from {:?} to {:?} (performance: {:.3})",
+                self.current_policy, best_policy, current_performance
+            );
 
             self.current_policy = best_policy;
             self.batch_optimizer.policy = best_policy;
@@ -559,7 +638,8 @@ impl IntelligentScheduler {
 
     fn select_best_policy(&self) -> SchedulingPolicy {
         // Return policy with best performance, with some exploration
-        self.policy_performance.iter()
+        self.policy_performance
+            .iter()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(Ordering::Equal))
             .map(|(policy, _)| *policy)
             .unwrap_or(SchedulingPolicy::CacheAware)
@@ -579,8 +659,7 @@ impl IntelligentScheduler {
 
     // Standard scheduler interface methods
     pub fn should_create_batch(&self) -> bool {
-        !self.pending_requests.is_empty()
-            && self.last_batch_time.elapsed() >= self.batching_window
+        !self.pending_requests.is_empty() && self.last_batch_time.elapsed() >= self.batching_window
     }
 
     pub fn pending_count(&self) -> usize {
@@ -650,16 +729,14 @@ mod tests {
 
     #[test]
     fn test_request_analysis() {
-        let request = Request::new(
-            1,
-            vec![1, 2, 3, 4, 5],
-            100,
-            RequestPriority::Normal
-        );
+        let request = Request::new(1, vec![1, 2, 3, 4, 5], 100, RequestPriority::Normal);
 
         // Mock GPU cache for testing
         // In practice would use actual GpuIntegratedCache
-        println!("Request analysis test - request has {} prompt tokens", request.prompt_tokens.len());
+        println!(
+            "Request analysis test - request has {} prompt tokens",
+            request.prompt_tokens.len()
+        );
     }
 
     #[test]
@@ -705,8 +782,40 @@ impl IntelligentScheduler {
         }
     }
 
+    pub fn new_cpu(max_batch_size: usize) -> Result<Self, String> {
+        let gpu_cache = GpuIntegratedCache::new_cpu(10000, 100000, 16, 16)
+            .map_err(|e| format!("Failed to create CPU cache: {:?}", e))?;
+        let kv_cache = Arc::new(Mutex::new(gpu_cache));
+        Ok(Self {
+            pending_requests: VecDeque::new(),
+            active_requests: HashMap::new(),
+            completed_requests: VecDeque::new(),
+            gpu_cache: kv_cache.clone(),
+            batch_optimizer: CacheAwareBatchOptimizer {
+                gpu_cache: kv_cache.clone(),
+                policy: SchedulingPolicy::FCFS,
+                workload_analyzer: WorkloadAnalyzer::new(),
+                performance_predictor: PerformancePredictor::new(),
+            },
+            current_policy: SchedulingPolicy::FCFS,
+            policy_performance: HashMap::new(),
+            last_policy_switch: Instant::now(),
+            max_batch_size,
+            max_gpu_memory: 1024 * 1024 * 1024,
+            batching_window: Duration::from_millis(100),
+            next_request_id: 1,
+            next_batch_id: 1,
+            last_batch_time: Instant::now(),
+            stats: IntelligentSchedulerStats::new(),
+        })
+    }
+
     /// Schedule a request (stub implementation)
-    pub fn schedule_request(&self, _request: &InferenceRequest, _cache_analysis: &kv::CacheAnalysis) -> Result<ScheduleInfo, String> {
+    pub fn schedule_request(
+        &self,
+        _request: &InferenceRequest,
+        _cache_analysis: &kv::CacheAnalysis,
+    ) -> Result<ScheduleInfo, String> {
         Ok(ScheduleInfo {
             gpu_id: 0,
             memory_pressure: 0.5,

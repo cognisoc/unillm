@@ -350,8 +350,8 @@ impl BatchProcessor {
     async fn record_batch_performance(&self, batch: &Batch, results: &[InferenceResponse], processing_time: Duration) {
         // Calculate metrics from results
         let total_tokens: usize = results.iter().map(|r| r.stats.total_tokens).sum();
-        let throughput = total_tokens as f32 / processing_time.as_secs_f32();
-        let avg_latency = results.iter().map(|r| r.stats.total_time_ms).sum::<f32>() / results.len() as f32;
+        let throughput = total_tokens as f64 / processing_time.as_secs_f64();
+        let avg_latency = results.iter().map(|r| r.stats.total_time_ms).sum::<f64>() / results.len() as f64;
         let avg_cache_hit_rate = results.iter().map(|r| r.metadata.cache_info.hit_rate).sum::<f32>() / results.len() as f32;
         let avg_gpu_utilization = results.iter().map(|r| r.metadata.resource_usage.gpu_utilization).sum::<f32>() / results.len() as f32;
 
@@ -365,8 +365,8 @@ impl BatchProcessor {
             batch_size: batch.requests.len(),
             average_sequence_length: avg_sequence_length,
             processing_time,
-            throughput_tokens_per_second: throughput,
-            average_latency_ms: avg_latency,
+            throughput_tokens_per_second: throughput as f32,
+            average_latency_ms: avg_latency as f32,
             cache_hit_rate: avg_cache_hit_rate,
             gpu_utilization: avg_gpu_utilization,
             timestamp: Instant::now(),

@@ -3,16 +3,16 @@
 //! This module provides tokenization using the HuggingFace tokenizers library,
 //! with fallback to a basic tokenizer for simple use cases.
 
-use crate::types::*;
+use crate::model_core::{ModelError, ModelResult};
 use std::collections::HashMap;
 use std::path::Path;
 use tokenizers::Tokenizer as HfTokenizer;
 
 /// Special token IDs (defaults, may be overridden by loaded tokenizer)
-pub const BOS_TOKEN_ID: u32 = 1;   // Beginning of sequence
-pub const EOS_TOKEN_ID: u32 = 2;   // End of sequence
-pub const UNK_TOKEN_ID: u32 = 0;   // Unknown token
-pub const PAD_TOKEN_ID: u32 = 3;   // Padding token
+pub const BOS_TOKEN_ID: u32 = 1; // Beginning of sequence
+pub const EOS_TOKEN_ID: u32 = 2; // End of sequence
+pub const UNK_TOKEN_ID: u32 = 0; // Unknown token
+pub const PAD_TOKEN_ID: u32 = 3; // Padding token
 
 /// Special tokens configuration
 #[derive(Debug, Clone)]
@@ -57,8 +57,9 @@ impl Tokenizer {
 
     /// Load tokenizer from a tokenizer.json file (HuggingFace format)
     pub fn from_file<P: AsRef<Path>>(path: P) -> ModelResult<Self> {
-        let hf_tokenizer = HfTokenizer::from_file(path.as_ref())
-            .map_err(|e| ModelError::InitializationFailed(format!("Failed to load tokenizer: {}", e)))?;
+        let hf_tokenizer = HfTokenizer::from_file(path.as_ref()).map_err(|e| {
+            ModelError::InitializationFailed(format!("Failed to load tokenizer: {}", e))
+        })?;
 
         // Try to extract special token IDs from the tokenizer
         let special_tokens = Self::extract_special_tokens(&hf_tokenizer);
@@ -81,7 +82,9 @@ impl Tokenizer {
     }
 
     /// Create tokenizer from GGUF tokenizer data
-    pub fn from_gguf(gguf_tokenizer: &crate::weight_loader_core::GGUFTokenizer) -> ModelResult<Self> {
+    pub fn from_gguf(
+        gguf_tokenizer: &crate::weight_loader_core::GGUFTokenizer,
+    ) -> ModelResult<Self> {
         let impl_tokenizer = GGUFTokenizerImpl::new(gguf_tokenizer);
         let special_tokens = impl_tokenizer.special_tokens.clone();
 
@@ -113,7 +116,10 @@ impl Tokenizer {
 
         // Convert model name to cache path format
         let model_path = cache_dir.join(format!("models--{}", model_name.replace('/', "--")));
-        let tokenizer_path = model_path.join("snapshots").join("*").join("tokenizer.json");
+        let tokenizer_path = model_path
+            .join("snapshots")
+            .join("*")
+            .join("tokenizer.json");
 
         // Try to find tokenizer in cache
         if let Ok(entries) = glob::glob(tokenizer_path.to_str().unwrap_or("")) {
@@ -164,7 +170,10 @@ impl Tokenizer {
                     Ok(encoding) => encoding.get_ids().to_vec(),
                     Err(_) => {
                         // Fallback to basic encoding
-                        vec![self.special_tokens.bos_token_id, self.special_tokens.eos_token_id]
+                        vec![
+                            self.special_tokens.bos_token_id,
+                            self.special_tokens.eos_token_id,
+                        ]
                     }
                 }
             }
@@ -176,28 +185,26 @@ impl Tokenizer {
     /// Encode text with special tokens
     pub fn encode_with_special_tokens(&self, text: &str, add_bos: bool, add_eos: bool) -> Vec<u32> {
         match &self.inner {
-            TokenizerBackend::HuggingFace(hf) => {
-                match hf.encode(text, add_bos) {
-                    Ok(encoding) => {
-                        let mut ids = encoding.get_ids().to_vec();
-                        if add_eos && !ids.ends_with(&[self.special_tokens.eos_token_id]) {
-                            ids.push(self.special_tokens.eos_token_id);
-                        }
-                        ids
+            TokenizerBackend::HuggingFace(hf) => match hf.encode(text, add_bos) {
+                Ok(encoding) => {
+                    let mut ids = encoding.get_ids().to_vec();
+                    if add_eos && !ids.ends_with(&[self.special_tokens.eos_token_id]) {
+                        ids.push(self.special_tokens.eos_token_id);
                     }
-                    Err(_) => {
-                        let mut ids = if add_bos {
-                            vec![self.special_tokens.bos_token_id]
-                        } else {
-                            vec![]
-                        };
-                        if add_eos {
-                            ids.push(self.special_tokens.eos_token_id);
-                        }
-                        ids
-                    }
+                    ids
                 }
-            }
+                Err(_) => {
+                    let mut ids = if add_bos {
+                        vec![self.special_tokens.bos_token_id]
+                    } else {
+                        vec![]
+                    };
+                    if add_eos {
+                        ids.push(self.special_tokens.eos_token_id);
+                    }
+                    ids
+                }
+            },
             TokenizerBackend::Basic(basic) => {
                 let mut ids = basic.encode_raw(text);
                 if add_bos {
@@ -224,9 +231,7 @@ impl Tokenizer {
     /// Decode token IDs back to text
     pub fn decode(&self, token_ids: &[u32]) -> String {
         match &self.inner {
-            TokenizerBackend::HuggingFace(hf) => {
-                hf.decode(token_ids, true).unwrap_or_default()
-            }
+            TokenizerBackend::HuggingFace(hf) => hf.decode(token_ids, true).unwrap_or_default(),
             TokenizerBackend::Basic(basic) => basic.decode(token_ids),
             TokenizerBackend::GGUF(gguf) => gguf.decode(token_ids),
         }
@@ -235,9 +240,7 @@ impl Tokenizer {
     /// Decode token IDs without special token filtering
     pub fn decode_raw(&self, token_ids: &[u32]) -> String {
         match &self.inner {
-            TokenizerBackend::HuggingFace(hf) => {
-                hf.decode(token_ids, false).unwrap_or_default()
-            }
+            TokenizerBackend::HuggingFace(hf) => hf.decode(token_ids, false).unwrap_or_default(),
             TokenizerBackend::Basic(basic) => basic.decode(token_ids),
             TokenizerBackend::GGUF(gguf) => gguf.decode_raw(token_ids),
         }
@@ -256,9 +259,7 @@ impl Tokenizer {
     /// This is meant for streaming output where tokens are decoded one at a time.
     pub fn decode_single(&self, token_id: u32) -> String {
         match &self.inner {
-            TokenizerBackend::HuggingFace(hf) => {
-                hf.decode(&[token_id], true).unwrap_or_default()
-            }
+            TokenizerBackend::HuggingFace(hf) => hf.decode(&[token_id], true).unwrap_or_default(),
             TokenizerBackend::Basic(basic) => basic.decode(&[token_id]),
             TokenizerBackend::GGUF(gguf) => gguf.decode_single(token_id),
         }
@@ -350,22 +351,20 @@ impl BasicTokenizer {
 
         // Add basic vocabulary
         let basic_vocab = vec![
-            "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by",
-            "is", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does", "did",
-            "will", "would", "could", "should", "can", "may", "might", "must",
-            "I", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them",
-            "this", "that", "these", "those", "here", "there", "where", "when", "why", "how",
-            "what", "who", "which", "whose", "all", "some", "any", "no", "not", "yes",
-            "hello", "world", "test", "example", "text", "model", "language", "AI",
-            "quick", "brown", "fox", "dog", "cat", "house", "car", "tree", "book", "water",
-            ".", "!", "?", ",", ";", ":", "'", "\"", "-", "_", "(", ")", "[", "]", "{", "}",
-            "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-            "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
-            "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
-            "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
-            "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
-            "ing", "ed", "er", "ly", "tion", "ment", "ness", "ity", "ous", "ful",
-            " ", "\n", "\t",
+            "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
+            "by", "is", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does",
+            "did", "will", "would", "could", "should", "can", "may", "might", "must", "I", "you",
+            "he", "she", "it", "we", "they", "me", "him", "her", "us", "them", "this", "that",
+            "these", "those", "here", "there", "where", "when", "why", "how", "what", "who",
+            "which", "whose", "all", "some", "any", "no", "not", "yes", "hello", "world", "test",
+            "example", "text", "model", "language", "AI", "quick", "brown", "fox", "dog", "cat",
+            "house", "car", "tree", "book", "water", ".", "!", "?", ",", ";", ":", "'", "\"", "-",
+            "_", "(", ")", "[", "]", "{", "}", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+            "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q",
+            "r", "s", "t", "u", "v", "w", "x", "y", "z", "A", "B", "C", "D", "E", "F", "G", "H",
+            "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y",
+            "Z", "ing", "ed", "er", "ly", "tion", "ment", "ness", "ity", "ous", "ful", " ", "\n",
+            "\t",
         ];
 
         for word in basic_vocab {
@@ -421,7 +420,8 @@ impl BasicTokenizer {
             }
 
             if let Some(token) = self.id_to_token.get(&token_id) {
-                let is_single_char = token.len() == 1 && token.chars().next().unwrap().is_alphabetic();
+                let is_single_char =
+                    token.len() == 1 && token.chars().next().unwrap().is_alphabetic();
                 let is_whitespace = token.chars().all(|c| c.is_whitespace());
                 let is_punctuation = token.chars().all(|c| c.is_ascii_punctuation());
 
@@ -546,7 +546,8 @@ impl GGUFTokenizerImpl {
                         (token_to_id.get(left), token_to_id.get(right))
                     {
                         // Only keep the best (lowest score) merge for this pair
-                        let entry = merge_map.entry((left_id, right_id))
+                        let entry = merge_map
+                            .entry((left_id, right_id))
                             .or_insert((merged_id as u32, merged_score));
                         if merged_score < entry.1 {
                             *entry = (merged_id as u32, merged_score);
@@ -734,7 +735,11 @@ impl BatchTokenizer {
     }
 
     /// Encode multiple texts with padding
-    pub fn encode_batch(&self, texts: &[&str], max_length: Option<usize>) -> (Vec<Vec<u32>>, Vec<Vec<bool>>) {
+    pub fn encode_batch(
+        &self,
+        texts: &[&str],
+        max_length: Option<usize>,
+    ) -> (Vec<Vec<u32>>, Vec<Vec<bool>>) {
         let mut encoded_batch = Vec::new();
         let mut attention_masks = Vec::new();
 
@@ -744,7 +749,11 @@ impl BatchTokenizer {
         }
 
         let max_len = max_length.unwrap_or_else(|| {
-            encoded_batch.iter().map(|tokens| tokens.len()).max().unwrap_or(0)
+            encoded_batch
+                .iter()
+                .map(|tokens| tokens.len())
+                .max()
+                .unwrap_or(0)
         });
 
         for tokens in &mut encoded_batch {
@@ -767,7 +776,8 @@ impl BatchTokenizer {
 
     /// Decode batch of token sequences
     pub fn decode_batch(&self, token_sequences: &[Vec<u32>]) -> Vec<String> {
-        token_sequences.iter()
+        token_sequences
+            .iter()
             .map(|tokens| self.tokenizer.decode(tokens))
             .collect()
     }
@@ -775,10 +785,15 @@ impl BatchTokenizer {
 
 /// Get the length of a UTF-8 character from its first byte
 fn utf8_char_len(first_byte: u8) -> usize {
-    if first_byte < 0x80 { 1 }
-    else if first_byte < 0xE0 { 2 }
-    else if first_byte < 0xF0 { 3 }
-    else { 4 }
+    if first_byte < 0x80 {
+        1
+    } else if first_byte < 0xE0 {
+        2
+    } else if first_byte < 0xF0 {
+        3
+    } else {
+        4
+    }
 }
 
 #[cfg(test)]

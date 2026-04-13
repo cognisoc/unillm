@@ -1,0 +1,18 @@
+[package]
+name = "unillm-bin"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "unillm"
+path = "src/main.rs"
+
+[dependencies]
+runtime = { path = "../runtime" }
+inference = { path = "../inference" }
+
+anyhow = "1.0"
+clap = { version = "4.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+async-trait = "0.1"

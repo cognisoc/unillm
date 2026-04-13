@@ -10,10 +10,6 @@ readme = "../../README.md"
 [lib]
 name = "runtime"
 
-[[bin]]
-name = "unillm"
-path = "src/bin/unillm.rs"
-
 [features]
 default = []
 cuda = ["candle-core/cuda", "candle-nn/cuda"]
@@ -41,6 +37,9 @@ candle-nn = "0.8"
 
 # Async traits
 async-trait = "0.1"
+
+# Graceful shutdown support
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # Math operations
 num-traits = "0.2"

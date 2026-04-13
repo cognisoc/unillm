@@ -4,6 +4,7 @@ members = [
     "crates/scheduler",
     "crates/inference",
     "crates/runtime",
+    "crates/unillm-bin",
 ]
 resolver = "2"
 

@@ -3,10 +3,16 @@
 //! This module provides real-time GPU memory monitoring and predictive allocation
 //! to prevent out-of-memory conditions and optimize batch sizing.
 
-use crate::types::{Request, MemoryFeasibility, OptimalBatchSize, AllocationEvent, AllocationEventType, AllocationRecommendation};
+use crate::types::{
+    AllocationEvent, AllocationEventType, AllocationRecommendation, MemoryFeasibility,
+    OptimalBatchSize, Request,
+};
 use kv::{GpuIntegratedCache, GpuIntegratedCacheStats};
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+};
 use std::time::{Duration, Instant};
 
 /// Tracks GPU memory usage and predicts optimal allocation strategies
@@ -71,7 +77,9 @@ impl GpuMemoryTracker {
         }
 
         // Account for fragmentation overhead
-        let fragmentation_overhead = self.fragmentation_monitor.estimate_overhead(memory_requirement.total_bytes);
+        let fragmentation_overhead = self
+            .fragmentation_monitor
+            .estimate_overhead(memory_requirement.total_bytes);
         let effective_requirement = memory_requirement.total_bytes + fragmentation_overhead;
 
         let feasible = effective_requirement < current_available;
@@ -85,7 +93,7 @@ impl GpuMemoryTracker {
             feasible,
             pressure_level,
             &memory_requirement,
-            current_available
+            current_available,
         );
 
         MemoryFeasibility {
@@ -140,7 +148,8 @@ impl GpuMemoryTracker {
     /// Update memory tracking after allocation
     pub fn record_allocation(&self, event: AllocationEvent) {
         // Update available memory atomically
-        self.available_memory.fetch_sub(event.size, Ordering::AcqRel);
+        self.available_memory
+            .fetch_sub(event.size, Ordering::AcqRel);
 
         // Record in allocation history
         {
@@ -180,7 +189,8 @@ impl GpuMemoryTracker {
         }
 
         // Update fragmentation analysis
-        self.fragmentation_monitor.record_deallocation(size, allocation_id);
+        self.fragmentation_monitor
+            .record_deallocation(size, allocation_id);
 
         // Update metrics
         self.allocation_metrics.record_deallocation(size);
@@ -255,7 +265,8 @@ impl GpuMemoryTracker {
             cache_guard.get_stats()
         };
 
-        let utilization = cache_stats.gpu_memory_usage as f64 / (cache_stats.gpu_memory_usage + 1024*1024*1024) as f64; // TODO: get real total
+        let utilization = cache_stats.gpu_memory_usage as f64
+            / (cache_stats.gpu_memory_usage + 1024 * 1024 * 1024) as f64; // TODO: get real total
 
         // Pressure increases exponentially as we approach memory limits
         if utilization > 0.95 {
@@ -275,7 +286,8 @@ impl GpuMemoryTracker {
         // Base allocation time (empirically measured)
         let base_time_ns = 1000; // 1μs base
         let size_factor = (requirement.total_bytes as f64).log2() * 100.0; // Log scaling with size
-        let fragmentation_penalty = self.fragmentation_monitor.current_fragmentation_ratio() * 500.0;
+        let fragmentation_penalty =
+            self.fragmentation_monitor.current_fragmentation_ratio() * 500.0;
 
         Duration::from_nanos((base_time_ns as f64 + size_factor + fragmentation_penalty) as u64)
     }
@@ -289,7 +301,9 @@ impl GpuMemoryTracker {
             let mid = (left + right) / 2;
             let batch = &requests[..mid];
             let requirement = self.calculate_batch_memory_requirement(batch);
-            let fragmentation_overhead = self.fragmentation_monitor.estimate_overhead(requirement.total_bytes);
+            let fragmentation_overhead = self
+                .fragmentation_monitor
+                .estimate_overhead(requirement.total_bytes);
 
             if requirement.total_bytes + fragmentation_overhead <= max_memory {
                 optimal = mid;
@@ -307,15 +321,27 @@ impl GpuMemoryTracker {
         self.find_optimal_batch_size(requests, available)
     }
 
-    fn estimate_throughput(&self, requests: &[Request], requirement: &BatchMemoryRequirement) -> f64 {
+    fn estimate_throughput(
+        &self,
+        requests: &[Request],
+        requirement: &BatchMemoryRequirement,
+    ) -> f64 {
         // Simplified throughput estimation based on token count and memory efficiency
         let base_throughput = requirement.total_tokens as f64 / 100.0; // 100 tokens/second baseline
-        let memory_efficiency_factor = 1.0 - (requirement.total_bytes as f64 / self.available_memory.load(Ordering::Acquire) as f64).min(1.0) * 0.2;
+        let memory_efficiency_factor = 1.0
+            - (requirement.total_bytes as f64
+                / self.available_memory.load(Ordering::Acquire) as f64)
+                .min(1.0)
+                * 0.2;
 
         base_throughput * memory_efficiency_factor
     }
 
-    fn estimate_batch_latency(&self, _requests: &[Request], requirement: &BatchMemoryRequirement) -> Duration {
+    fn estimate_batch_latency(
+        &self,
+        _requests: &[Request],
+        requirement: &BatchMemoryRequirement,
+    ) -> Duration {
         // Simplified latency estimation
         let base_latency_ms = requirement.average_tokens_per_sequence as f64 * 0.01; // 10μs per token
         let memory_pressure_penalty = self.calculate_memory_pressure() * 5.0; // Up to 5ms penalty
@@ -325,20 +351,31 @@ impl GpuMemoryTracker {
 
     fn calculate_feasibility_confidence(&self, feasible: bool, pressure_level: f64) -> f64 {
         if feasible {
-            if pressure_level < 0.3 { 0.95 }
-            else if pressure_level < 0.6 { 0.85 }
-            else { 0.70 }
+            if pressure_level < 0.3 {
+                0.95
+            } else if pressure_level < 0.6 {
+                0.85
+            } else {
+                0.70
+            }
         } else {
-            if pressure_level > 0.9 { 0.95 }
-            else { 0.80 }
+            if pressure_level > 0.9 {
+                0.95
+            } else {
+                0.80
+            }
         }
     }
 
     fn calculate_batch_size_confidence(&self, optimal_size: usize, total_requests: usize) -> f64 {
         let size_ratio = optimal_size as f64 / total_requests as f64;
-        if size_ratio > 0.8 { 0.9 }
-        else if size_ratio > 0.5 { 0.8 }
-        else { 0.7 }
+        if size_ratio > 0.8 {
+            0.9
+        } else if size_ratio > 0.5 {
+            0.8
+        } else {
+            0.7
+        }
     }
 
     fn generate_allocation_recommendation(
@@ -359,9 +396,15 @@ impl GpuMemoryTracker {
         if optimal == total {
             "All requests can be accommodated efficiently".to_string()
         } else if pressure > 0.7 {
-            format!("Reduced batch size due to high memory pressure ({}%)", (pressure * 100.0) as u8)
+            format!(
+                "Reduced batch size due to high memory pressure ({}%)",
+                (pressure * 100.0) as u8
+            )
         } else {
-            format!("Optimal size balances memory efficiency and throughput ({}/{})", optimal, total)
+            format!(
+                "Optimal size balances memory efficiency and throughput ({}/{})",
+                optimal, total
+            )
         }
     }
 }
@@ -450,9 +493,15 @@ pub struct AllocationHistoryStats {
 pub struct FragmentationAnalyzer {}
 
 impl FragmentationAnalyzer {
-    pub fn new() -> Self { Self {} }
-    pub fn estimate_overhead(&self, _size: usize) -> usize { 0 }
-    pub fn current_fragmentation_ratio(&self) -> f64 { 0.1 }
+    pub fn new() -> Self {
+        Self {}
+    }
+    pub fn estimate_overhead(&self, _size: usize) -> usize {
+        0
+    }
+    pub fn current_fragmentation_ratio(&self) -> f64 {
+        0.1
+    }
     pub fn record_allocation(&self, _event: &AllocationEvent) {}
     pub fn record_deallocation(&self, _size: usize, _id: u64) {}
 }
@@ -460,8 +509,12 @@ impl FragmentationAnalyzer {
 pub struct OOMPredictor {}
 
 impl OOMPredictor {
-    pub fn new() -> Self { Self {} }
-    pub fn current_risk_score(&self) -> f64 { 0.1 }
+    pub fn new() -> Self {
+        Self {}
+    }
+    pub fn current_risk_score(&self) -> f64 {
+        0.1
+    }
     pub fn update_with_allocation(&self, _event: &AllocationEvent) {}
 }
 
@@ -471,7 +524,9 @@ pub struct MemoryWatermarks {
 
 impl MemoryWatermarks {
     pub fn new(total_memory: usize) -> Self {
-        Self { _total_memory: total_memory }
+        Self {
+            _total_memory: total_memory,
+        }
     }
 
     pub fn current_status(&self) -> WatermarkStatus {
@@ -489,8 +544,12 @@ pub enum WatermarkStatus {
 pub struct AllocationMetrics {}
 
 impl AllocationMetrics {
-    pub fn new() -> Self { Self {} }
+    pub fn new() -> Self {
+        Self {}
+    }
     pub fn record_allocation(&self, _event: &AllocationEvent) {}
     pub fn record_deallocation(&self, _size: usize) {}
-    pub fn peak_usage(&self) -> usize { 0 }
+    pub fn peak_usage(&self) -> usize {
+        0
+    }
 }

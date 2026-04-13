@@ -5,11 +5,14 @@
 //! - vLLM's PagedAttention for block-level efficiency (L2)
 //! - Compressed storage for cold data (L3)
 
-use std::collections::{HashMap, BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex, atomic::{AtomicU32, AtomicU64, Ordering}};
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::{
+    atomic::{AtomicU32, AtomicU64, Ordering},
+    Arc, Mutex,
+};
 use std::time::{Duration, Instant};
 
-use crate::{PagedKvAllocator, KvAllocatorStats};
+use crate::{KvAllocatorStats, PagedKvAllocator};
 
 /// Token ID type
 pub type TokenId = u32;
@@ -33,24 +36,30 @@ pub struct CacheHandle {
 /// Cache tier enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CacheTier {
-    L1Radix,     // Hot: Token-level sharing
-    L2Paged,     // Warm: Block-level efficiency
-    L3Compressed,// Cold: Compressed storage
+    L1Radix,      // Hot: Token-level sharing
+    L2Paged,      // Warm: Block-level efficiency
+    L3Compressed, // Cold: Compressed storage
 }
 
 /// KV tensor pair representation
 #[derive(Debug, Clone)]
 pub struct KVTensorPair {
-    pub key_ptr: u64,      // Device pointer to key tensor
-    pub value_ptr: u64,    // Device pointer to value tensor
-    pub size_bytes: usize, // Total size in bytes
-    pub token_count: usize,// Number of tokens
-    pub head_dim: usize,   // Dimension per attention head
-    pub num_heads: usize,  // Number of attention heads
+    pub key_ptr: u64,       // Device pointer to key tensor
+    pub value_ptr: u64,     // Device pointer to value tensor
+    pub size_bytes: usize,  // Total size in bytes
+    pub token_count: usize, // Number of tokens
+    pub head_dim: usize,    // Dimension per attention head
+    pub num_heads: usize,   // Number of attention heads
 }
 
 impl KVTensorPair {
-    pub fn new(key_ptr: u64, value_ptr: u64, token_count: usize, head_dim: usize, num_heads: usize) -> Self {
+    pub fn new(
+        key_ptr: u64,
+        value_ptr: u64,
+        token_count: usize,
+        head_dim: usize,
+        num_heads: usize,
+    ) -> Self {
         let size_bytes = token_count * head_dim * num_heads * 2 * 2; // 2 for K+V, 2 bytes for f16
         Self {
             key_ptr,
@@ -99,7 +108,7 @@ impl RadixNode {
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
-                    .as_secs()
+                    .as_secs(),
             ),
             node_id,
             parent: None,
@@ -201,7 +210,7 @@ impl RadixCache {
                 if let Some(child_node) = node.children.get(&next_token) {
                     current_node_id = child_node.node_id;
                     matched_length += 1;
-                    
+
                     // Check if the child node has KV data (valid endpoint)
                     if let Some(child_full_node) = self.nodes.get(&current_node_id) {
                         if child_full_node.kv_data.is_some() {
@@ -228,7 +237,11 @@ impl RadixCache {
     }
 
     /// Insert a new sequence into the radix tree
-    pub fn insert_sequence(&mut self, tokens: &[TokenId], kv_data: KVTensorPair) -> Result<NodeId, Box<dyn std::error::Error>> {
+    pub fn insert_sequence(
+        &mut self,
+        tokens: &[TokenId],
+        kv_data: KVTensorPair,
+    ) -> Result<NodeId, Box<dyn std::error::Error>> {
         if tokens.is_empty() {
             return Err("Cannot insert empty token sequence".into());
         }
@@ -265,7 +278,9 @@ impl RadixCache {
 
             // Insert into parent's children
             if let Some(parent_node) = self.nodes.get_mut(&current_node_id) {
-                parent_node.children.insert(token, Box::new(RadixNode::new(new_node_id, vec![token])));
+                parent_node
+                    .children
+                    .insert(token, Box::new(RadixNode::new(new_node_id, vec![token])));
             }
 
             current_node_id = new_node_id;
@@ -356,10 +371,10 @@ pub struct AdaptiveCachePolicy {
 
 #[derive(Debug, Clone, Copy)]
 pub enum CachePolicy {
-    RadixPreferred,      // Favor L1 radix cache
-    PagedPreferred,      // Favor L2 paged cache
-    Balanced,            // Mixed approach
-    WorkloadAdaptive,    // ML-optimized policy
+    RadixPreferred,   // Favor L1 radix cache
+    PagedPreferred,   // Favor L2 paged cache
+    Balanced,         // Mixed approach
+    WorkloadAdaptive, // ML-optimized policy
 }
 
 impl AdaptiveCachePolicy {
@@ -379,7 +394,8 @@ impl AdaptiveCachePolicy {
     pub fn analyze_workload(&mut self, access_patterns: &[AccessPattern]) {
         // Calculate prefix sharing ratio
         let total_accesses = access_patterns.len() as f64;
-        let shared_prefixes = access_patterns.iter()
+        let shared_prefixes = access_patterns
+            .iter()
             .filter(|p| p.prefix_length > 0)
             .count() as f64;
 
@@ -402,15 +418,17 @@ impl AdaptiveCachePolicy {
                 } else {
                     CacheTier::L2Paged
                 }
-            },
+            }
             CachePolicy::PagedPreferred => CacheTier::L2Paged,
             CachePolicy::Balanced => {
-                if sequence_info.has_common_prefix && sequence_info.access_frequency > self.l1_promotion_threshold {
+                if sequence_info.has_common_prefix
+                    && sequence_info.access_frequency > self.l1_promotion_threshold
+                {
                     CacheTier::L1Radix
                 } else {
                     CacheTier::L2Paged
                 }
-            },
+            }
             CachePolicy::WorkloadAdaptive => {
                 // TODO: Implement ML-based policy
                 CacheTier::L2Paged
@@ -427,14 +445,14 @@ impl AdaptiveCachePolicy {
                 } else {
                     None
                 }
-            },
+            }
             CacheTier::L2Paged => {
                 if access_frequency > self.l1_promotion_threshold {
                     Some(CacheTier::L1Radix)
                 } else {
                     None
                 }
-            },
+            }
             CacheTier::L1Radix => None, // Already at highest tier
         }
     }
@@ -448,14 +466,14 @@ impl AdaptiveCachePolicy {
                 } else {
                     None
                 }
-            },
+            }
             CacheTier::L2Paged => {
                 if access_frequency < self.l3_compression_threshold {
                     Some(CacheTier::L3Compressed)
                 } else {
                     None
                 }
-            },
+            }
             CacheTier::L3Compressed => None, // Already at lowest tier
         }
     }
@@ -554,7 +572,11 @@ impl HybridKVCache {
     }
 
     /// Allocate cache for a new sequence
-    pub fn allocate_sequence(&mut self, tokens: &[TokenId], max_length: usize) -> Result<CacheHandle, Box<dyn std::error::Error>> {
+    pub fn allocate_sequence(
+        &mut self,
+        tokens: &[TokenId],
+        max_length: usize,
+    ) -> Result<CacheHandle, Box<dyn std::error::Error>> {
         // Determine optimal tier based on policy
         let sequence_info = SequenceInfo {
             sequence_id: self.next_handle_id as SequenceId,
@@ -586,17 +608,15 @@ impl HybridKVCache {
                         self.handle_mapping.insert(handle, location);
                         self.stats.l1_hits += 1;
                         Ok(handle)
-                    },
+                    }
                     Err(_) => {
                         // Fallback to L2 if L1 fails
                         drop(l1_cache);
                         self.allocate_in_l2(handle, max_length)
                     }
                 }
-            },
-            CacheTier::L2Paged => {
-                self.allocate_in_l2(handle, max_length)
-            },
+            }
+            CacheTier::L2Paged => self.allocate_in_l2(handle, max_length),
             CacheTier::L3Compressed => {
                 // TODO: Implement L3 allocation
                 Err("L3 compression not yet implemented".into())
@@ -604,7 +624,11 @@ impl HybridKVCache {
         }
     }
 
-    fn allocate_in_l2(&mut self, handle: CacheHandle, max_length: usize) -> Result<CacheHandle, Box<dyn std::error::Error>> {
+    fn allocate_in_l2(
+        &mut self,
+        handle: CacheHandle,
+        max_length: usize,
+    ) -> Result<CacheHandle, Box<dyn std::error::Error>> {
         let mut l2_cache = self.l2_paged.lock().unwrap();
         match l2_cache.allocate_sequence(max_length) {
             Ok((seq_id, _pages)) => {
@@ -620,8 +644,8 @@ impl HybridKVCache {
                 self.handle_mapping.insert(new_handle, location);
                 self.stats.l2_hits += 1;
                 Ok(new_handle)
-            },
-            Err(e) => Err(e)
+            }
+            Err(e) => Err(e),
         }
     }
 

@@ -8,3 +8,5 @@ repository = "https://github.com/cognisoc/unillm"
 readme = "../../README.md"
 
 [dependencies]
+runtime = { package = "unillm-runtime", path = "../runtime", version = "0.1.0" }
+anyhow = "1.0"

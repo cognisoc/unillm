@@ -198,7 +198,7 @@ impl ResponseStream {
                 total_tokens: tokens.len(),
                 time_to_first_token_ms: 0.0,
                 tokens_per_second: 0.0,
-                total_time_ms: self.elapsed().as_millis() as f32,
+                total_time_ms: self.elapsed().as_millis() as f64,
                 cache_hit_rate: 0.0,
                 memory_usage_mb: 0.0,
             }),
@@ -345,7 +345,7 @@ impl InferenceResponse {
     }
 
     /// Get tokens per second rate
-    pub fn tokens_per_second(&self) -> f32 {
+    pub fn tokens_per_second(&self) -> f64 {
         self.stats.tokens_per_second
     }
 

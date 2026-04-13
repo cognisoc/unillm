@@ -3,7 +3,9 @@
 //! This module implements ML-based policy optimization that adapts scheduling
 //! strategies based on workload characteristics and performance feedback.
 
-use crate::types::{Request, SchedulingPolicy, PolicyDecision, SchedulerMetrics, WorkloadProfile, PolicyAction};
+use crate::types::{
+    PolicyAction, PolicyDecision, Request, SchedulerMetrics, SchedulingPolicy, WorkloadProfile,
+};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -84,7 +86,8 @@ impl AdaptivePolicyEngine {
 
         // Update analysis metrics
         let analysis_time = start_time.elapsed();
-        self.analysis_metrics.record_analysis(analysis_time, decision.confidence);
+        self.analysis_metrics
+            .record_analysis(analysis_time, decision.confidence);
 
         decision
     }
@@ -95,12 +98,15 @@ impl AdaptivePolicyEngine {
         let current_workload = &self.workload_characteristics;
 
         // Use ML model to predict best policy
-        self.policy_optimizer.predict_optimal_policy(&request_analysis, current_workload)
+        self.policy_optimizer
+            .predict_optimal_policy(&request_analysis, current_workload)
     }
 
     /// Get current policy and its confidence score
     pub fn current_policy_info(&self) -> (SchedulingPolicy, f64) {
-        let confidence = self.policy_performance.get(&self.current_policy)
+        let confidence = self
+            .policy_performance
+            .get(&self.current_policy)
             .map(|perf| perf.confidence_score)
             .unwrap_or(0.5);
 
@@ -109,7 +115,8 @@ impl AdaptivePolicyEngine {
 
     /// Get performance summary for all policies
     pub fn get_policy_performance_summary(&self) -> Vec<PolicySummary> {
-        self.policy_performance.iter()
+        self.policy_performance
+            .iter()
             .map(|(policy, metrics)| PolicySummary {
                 policy: *policy,
                 average_latency: metrics.average_latency,
@@ -157,7 +164,10 @@ impl AdaptivePolicyEngine {
         }
     }
 
-    fn predict_optimal_policy_from_analysis(&self, analysis: &WorkloadAnalysis) -> SchedulingPolicy {
+    fn predict_optimal_policy_from_analysis(
+        &self,
+        analysis: &WorkloadAnalysis,
+    ) -> SchedulingPolicy {
         match analysis.workload_type {
             WorkloadType::CacheHeavy => {
                 if analysis.cache_hit_pattern.prefix_sharing_potential > 0.7 {
@@ -166,9 +176,7 @@ impl AdaptivePolicyEngine {
                     SchedulingPolicy::CacheAware
                 }
             }
-            WorkloadType::MemoryConstrained => {
-                SchedulingPolicy::GpuMemoryOptimized
-            }
+            WorkloadType::MemoryConstrained => SchedulingPolicy::GpuMemoryOptimized,
             WorkloadType::HighThroughput => {
                 if analysis.predictability_score > 0.8 {
                     SchedulingPolicy::AdaptiveML
@@ -183,7 +191,11 @@ impl AdaptivePolicyEngine {
         }
     }
 
-    fn evaluate_policy_change(&self, predicted_optimal: &SchedulingPolicy, analysis: &WorkloadAnalysis) -> PolicyChangeEvaluation {
+    fn evaluate_policy_change(
+        &self,
+        predicted_optimal: &SchedulingPolicy,
+        analysis: &WorkloadAnalysis,
+    ) -> PolicyChangeEvaluation {
         if predicted_optimal == &self.current_policy {
             return PolicyChangeEvaluation {
                 recommended_change: false,
@@ -195,21 +207,24 @@ impl AdaptivePolicyEngine {
         }
 
         // Estimate performance improvement
-        let current_performance = self.policy_performance.get(&self.current_policy)
+        let current_performance = self
+            .policy_performance
+            .get(&self.current_policy)
             .map(|p| p.overall_score())
             .unwrap_or(0.5);
 
-        let predicted_performance = self.policy_performance.get(predicted_optimal)
+        let predicted_performance = self
+            .policy_performance
+            .get(predicted_optimal)
             .map(|p| p.overall_score())
             .unwrap_or(0.5);
 
         let expected_improvement = predicted_performance - current_performance;
 
         // Calculate transition cost
-        let transition_cost = self.transition_controller.estimate_transition_cost(
-            &self.current_policy,
-            predicted_optimal,
-        );
+        let transition_cost = self
+            .transition_controller
+            .estimate_transition_cost(&self.current_policy, predicted_optimal);
 
         // Assess risk of policy change
         let risk = self.assess_policy_change_risk(predicted_optimal, analysis);
@@ -228,7 +243,11 @@ impl AdaptivePolicyEngine {
         }
     }
 
-    fn make_adaptation_decision(&self, evaluation: &PolicyChangeEvaluation, analysis: &WorkloadAnalysis) -> PolicyDecision {
+    fn make_adaptation_decision(
+        &self,
+        evaluation: &PolicyChangeEvaluation,
+        analysis: &WorkloadAnalysis,
+    ) -> PolicyDecision {
         let action = if evaluation.recommended_change {
             // Find the optimal policy again to ensure consistency
             let optimal_policy = self.predict_optimal_policy_from_analysis(analysis);
@@ -251,7 +270,8 @@ impl AdaptivePolicyEngine {
         let start_time = Instant::now();
 
         // Record policy change
-        self.transition_controller.begin_transition(self.current_policy, new_policy);
+        self.transition_controller
+            .begin_transition(self.current_policy, new_policy);
 
         // Update current policy
         let old_policy = self.current_policy;
@@ -267,7 +287,8 @@ impl AdaptivePolicyEngine {
         );
 
         // Update metrics
-        self.analysis_metrics.record_policy_change(old_policy, new_policy, transition_time);
+        self.analysis_metrics
+            .record_policy_change(old_policy, new_policy, transition_time);
     }
 
     // Helper methods for workload analysis
@@ -281,10 +302,13 @@ impl AdaptivePolicyEngine {
     }
 
     fn analyze_cache_hit_patterns(&self, metrics: &[SchedulerMetrics]) -> CacheHitPattern {
-        let avg_hit_rate = metrics.iter().map(|m| m.cache_hit_rate).sum::<f64>() / metrics.len() as f64;
-        let variance = metrics.iter()
+        let avg_hit_rate =
+            metrics.iter().map(|m| m.cache_hit_rate).sum::<f64>() / metrics.len() as f64;
+        let variance = metrics
+            .iter()
             .map(|m| (m.cache_hit_rate - avg_hit_rate).powi(2))
-            .sum::<f64>() / metrics.len() as f64;
+            .sum::<f64>()
+            / metrics.len() as f64;
 
         CacheHitPattern {
             average_hit_rate: avg_hit_rate,
@@ -303,7 +327,9 @@ impl AdaptivePolicyEngine {
         let n = metrics.len() as f64;
         let sum_x: f64 = (0..metrics.len()).map(|i| i as f64).sum();
         let sum_y: f64 = metrics.iter().map(|m| m.memory_pressure).sum();
-        let sum_xy: f64 = metrics.iter().enumerate()
+        let sum_xy: f64 = metrics
+            .iter()
+            .enumerate()
             .map(|(i, m)| i as f64 * m.memory_pressure)
             .sum();
         let sum_x2: f64 = (0..metrics.len()).map(|i| (i as f64).powi(2)).sum();
@@ -312,8 +338,13 @@ impl AdaptivePolicyEngine {
         (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x.powi(2))
     }
 
-    fn classify_workload_type(&self, request_rate: f64, avg_prompt_length: f64,
-                              cache_pattern: &CacheHitPattern, memory_trend: f64) -> WorkloadType {
+    fn classify_workload_type(
+        &self,
+        request_rate: f64,
+        avg_prompt_length: f64,
+        cache_pattern: &CacheHitPattern,
+        memory_trend: f64,
+    ) -> WorkloadType {
         if cache_pattern.average_hit_rate > 0.8 && cache_pattern.prefix_sharing_potential > 0.6 {
             WorkloadType::CacheHeavy
         } else if memory_trend > 0.1 || avg_prompt_length > 2000.0 {
@@ -327,23 +358,31 @@ impl AdaptivePolicyEngine {
         }
     }
 
-    fn identify_performance_bottlenecks(&self, metrics: &[SchedulerMetrics]) -> Vec<PerformanceBottleneck> {
+    fn identify_performance_bottlenecks(
+        &self,
+        metrics: &[SchedulerMetrics],
+    ) -> Vec<PerformanceBottleneck> {
         let mut bottlenecks = Vec::new();
 
-        let avg_batch_formation_time: f64 = metrics.iter()
+        let avg_batch_formation_time: f64 = metrics
+            .iter()
             .map(|m| m.batch_formation_time.as_micros() as f64)
-            .sum::<f64>() / metrics.len() as f64;
+            .sum::<f64>()
+            / metrics.len() as f64;
 
-        if avg_batch_formation_time > 5000.0 { // > 5ms
+        if avg_batch_formation_time > 5000.0 {
+            // > 5ms
             bottlenecks.push(PerformanceBottleneck::BatchFormation);
         }
 
-        let avg_memory_pressure: f64 = metrics.iter().map(|m| m.memory_pressure).sum::<f64>() / metrics.len() as f64;
+        let avg_memory_pressure: f64 =
+            metrics.iter().map(|m| m.memory_pressure).sum::<f64>() / metrics.len() as f64;
         if avg_memory_pressure > 0.8 {
             bottlenecks.push(PerformanceBottleneck::MemoryPressure);
         }
 
-        let avg_cache_hit_rate: f64 = metrics.iter().map(|m| m.cache_hit_rate).sum::<f64>() / metrics.len() as f64;
+        let avg_cache_hit_rate: f64 =
+            metrics.iter().map(|m| m.cache_hit_rate).sum::<f64>() / metrics.len() as f64;
         if avg_cache_hit_rate < 0.6 {
             bottlenecks.push(PerformanceBottleneck::CacheMisses);
         }
@@ -358,10 +397,16 @@ impl AdaptivePolicyEngine {
 
         // Calculate coefficient of variation for key metrics
         let throughput_cv = self.coefficient_of_variation(
-            &metrics.iter().map(|m| m.requests_per_second).collect::<Vec<_>>()
+            &metrics
+                .iter()
+                .map(|m| m.requests_per_second)
+                .collect::<Vec<_>>(),
         );
         let latency_cv = self.coefficient_of_variation(
-            &metrics.iter().map(|m| m.batch_formation_time.as_micros() as f64).collect::<Vec<_>>()
+            &metrics
+                .iter()
+                .map(|m| m.batch_formation_time.as_micros() as f64)
+                .collect::<Vec<_>>(),
         );
 
         // Lower CV indicates higher stability
@@ -381,7 +426,7 @@ impl AdaptivePolicyEngine {
         let mut variance_sum = 0.0;
 
         for i in 1..request_rates.len() {
-            autocorr_sum += (request_rates[i] - mean_rate) * (request_rates[i-1] - mean_rate);
+            autocorr_sum += (request_rates[i] - mean_rate) * (request_rates[i - 1] - mean_rate);
             variance_sum += (request_rates[i] - mean_rate).powi(2);
         }
 
@@ -413,10 +458,16 @@ impl AdaptivePolicyEngine {
             return 0.0;
         }
 
-        let first_half_avg = metrics[..metrics.len()/2].iter()
-            .map(|m| m.cache_hit_rate).sum::<f64>() / (metrics.len()/2) as f64;
-        let second_half_avg = metrics[metrics.len()/2..].iter()
-            .map(|m| m.cache_hit_rate).sum::<f64>() / (metrics.len() - metrics.len()/2) as f64;
+        let first_half_avg = metrics[..metrics.len() / 2]
+            .iter()
+            .map(|m| m.cache_hit_rate)
+            .sum::<f64>()
+            / (metrics.len() / 2) as f64;
+        let second_half_avg = metrics[metrics.len() / 2..]
+            .iter()
+            .map(|m| m.cache_hit_rate)
+            .sum::<f64>()
+            / (metrics.len() - metrics.len() / 2) as f64;
 
         second_half_avg - first_half_avg
     }
@@ -430,7 +481,11 @@ impl AdaptivePolicyEngine {
         cv.min(1.0)
     }
 
-    fn assess_policy_change_risk(&self, _new_policy: &SchedulingPolicy, analysis: &WorkloadAnalysis) -> RiskLevel {
+    fn assess_policy_change_risk(
+        &self,
+        _new_policy: &SchedulingPolicy,
+        analysis: &WorkloadAnalysis,
+    ) -> RiskLevel {
         if analysis.stability_score < 0.3 {
             RiskLevel::High
         } else if analysis.stability_score < 0.6 {
@@ -452,7 +507,11 @@ impl AdaptivePolicyEngine {
         (base_confidence - risk_penalty).max(0.0)
     }
 
-    fn generate_decision_reasoning(&self, evaluation: &PolicyChangeEvaluation, analysis: &WorkloadAnalysis) -> String {
+    fn generate_decision_reasoning(
+        &self,
+        evaluation: &PolicyChangeEvaluation,
+        analysis: &WorkloadAnalysis,
+    ) -> String {
         if evaluation.recommended_change {
             format!(
                 "Switching policy due to workload type {:?} with {:.1}% expected improvement",
@@ -481,8 +540,16 @@ impl AdaptivePolicyEngine {
 
         let total_prompt_tokens: usize = requests.iter().map(|r| r.prompt_tokens.len()).sum();
         let avg_prompt_length = total_prompt_tokens as f64 / requests.len() as f64;
-        let max_prompt_length = requests.iter().map(|r| r.prompt_tokens.len()).max().unwrap_or(0);
-        let min_prompt_length = requests.iter().map(|r| r.prompt_tokens.len()).min().unwrap_or(0);
+        let max_prompt_length = requests
+            .iter()
+            .map(|r| r.prompt_tokens.len())
+            .max()
+            .unwrap_or(0);
+        let min_prompt_length = requests
+            .iter()
+            .map(|r| r.prompt_tokens.len())
+            .min()
+            .unwrap_or(0);
 
         RequestAnalysis {
             count: requests.len(),
@@ -551,12 +618,28 @@ impl PolicyPerformanceMetrics {
         let count = self.measurements.len() as f64;
 
         self.average_latency = Duration::from_nanos(
-            (self.measurements.iter().map(|m| m.latency.as_nanos()).sum::<u128>() / count as u128) as u64
+            (self
+                .measurements
+                .iter()
+                .map(|m| m.latency.as_nanos())
+                .sum::<u128>()
+                / count as u128) as u64,
         );
 
-        self.average_throughput = self.measurements.iter().map(|m| m.throughput).sum::<f64>() / count;
-        self.cache_hit_rate = self.measurements.iter().map(|m| m.cache_hit_rate).sum::<f64>() / count;
-        self.memory_efficiency = self.measurements.iter().map(|m| m.memory_efficiency).sum::<f64>() / count;
+        self.average_throughput =
+            self.measurements.iter().map(|m| m.throughput).sum::<f64>() / count;
+        self.cache_hit_rate = self
+            .measurements
+            .iter()
+            .map(|m| m.cache_hit_rate)
+            .sum::<f64>()
+            / count;
+        self.memory_efficiency = self
+            .measurements
+            .iter()
+            .map(|m| m.memory_efficiency)
+            .sum::<f64>()
+            / count;
 
         // Update confidence based on measurement consistency
         self.confidence_score = self.calculate_confidence();
@@ -712,7 +795,8 @@ impl PerformanceWindow {
     }
 
     pub fn get_recent_metrics(&self, count: usize) -> Vec<SchedulerMetrics> {
-        self.measurements.iter()
+        self.measurements
+            .iter()
             .rev()
             .take(count)
             .cloned()
@@ -727,7 +811,11 @@ impl PolicyOptimizer {
         Self {}
     }
 
-    pub fn predict_optimal_policy(&self, _request_analysis: &RequestAnalysis, _workload: &WorkloadProfile) -> SchedulingPolicy {
+    pub fn predict_optimal_policy(
+        &self,
+        _request_analysis: &RequestAnalysis,
+        _workload: &WorkloadProfile,
+    ) -> SchedulingPolicy {
         SchedulingPolicy::CacheAware // Simplified implementation
     }
 
@@ -749,7 +837,11 @@ impl PolicyTransition {
         Self {}
     }
 
-    pub fn estimate_transition_cost(&self, _from: &SchedulingPolicy, _to: &SchedulingPolicy) -> Duration {
+    pub fn estimate_transition_cost(
+        &self,
+        _from: &SchedulingPolicy,
+        _to: &SchedulingPolicy,
+    ) -> Duration {
         Duration::from_millis(5) // Simplified implementation
     }
 
@@ -769,7 +861,12 @@ impl AnalysisMetrics {
         // Would record analysis metrics
     }
 
-    pub fn record_policy_change(&self, _from: SchedulingPolicy, _to: SchedulingPolicy, _time: Duration) {
+    pub fn record_policy_change(
+        &self,
+        _from: SchedulingPolicy,
+        _to: SchedulingPolicy,
+        _time: Duration,
+    ) {
         // Would record policy change metrics
     }
 }

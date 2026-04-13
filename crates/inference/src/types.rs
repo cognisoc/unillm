@@ -2,10 +2,26 @@ use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-/// Result type for inference operations
+pub use runtime::model_core::{GenerationStats, ModelPrecision};
+pub use runtime::tensor_core::DataType;
+
+/// Request priority levels
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum RequestPriority {
+    Low = 0,
+    Normal = 1,
+    High = 2,
+    Critical = 3,
+}
+
+impl Default for RequestPriority {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
 pub type InferenceResult<T> = std::result::Result<T, InferenceError>;
 
-/// Error types for inference operations
 #[derive(Debug, thiserror::Error)]
 pub enum InferenceError {
     #[error("Invalid request: {0}")]
@@ -36,7 +52,6 @@ pub enum InferenceError {
     Serialization(#[from] serde_json::Error),
 }
 
-/// Request identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RequestId(pub Uuid);
 
@@ -52,7 +67,6 @@ impl Default for RequestId {
     }
 }
 
-/// Model configuration for inference
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub model_name: String,
@@ -67,17 +81,6 @@ pub struct ModelConfig {
     pub dtype: DataType,
 }
 
-/// Data types supported for model parameters
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DataType {
-    Float32,
-    Float16,
-    BFloat16,
-    Int8,
-    Int4,
-}
-
-/// Sampling parameters for text generation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamplingParams {
     pub temperature: f32,
@@ -107,7 +110,6 @@ impl Default for SamplingParams {
     }
 }
 
-/// Engine health status
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineHealth {
     pub status: HealthStatus,
@@ -120,7 +122,6 @@ pub struct EngineHealth {
     pub last_error: Option<String>,
 }
 
-/// Health status enumeration
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HealthStatus {
     Healthy,
@@ -130,22 +131,6 @@ pub enum HealthStatus {
     Shutdown,
 }
 
-/// Request priority levels
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum RequestPriority {
-    Low = 0,
-    Normal = 1,
-    High = 2,
-    Critical = 3,
-}
-
-impl Default for RequestPriority {
-    fn default() -> Self {
-        Self::Normal
-    }
-}
-
-/// Execution context for requests
 #[derive(Debug, Clone)]
 pub struct ExecutionContext {
     pub request_id: RequestId,
@@ -223,7 +208,6 @@ impl ExecutionContext {
     }
 }
 
-/// Attention mechanism types supported
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttentionMechanism {
     MultiHead,
@@ -232,10 +216,9 @@ pub enum AttentionMechanism {
     FlashAttention,
     PagedAttention,
     RadixAttention,
-    HybridCacheAttention, // UniLLM's innovation
+    HybridCacheAttention,
 }
 
-/// Model architecture types
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ModelArchitecture {
     Llama,
@@ -246,7 +229,6 @@ pub enum ModelArchitecture {
     Custom(String),
 }
 
-/// Token information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenInfo {
     pub token_id: u32,
@@ -255,20 +237,6 @@ pub struct TokenInfo {
     pub top_logprobs: Option<Vec<(u32, f32)>>,
 }
 
-/// Generation statistics
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GenerationStats {
-    pub prompt_tokens: usize,
-    pub completion_tokens: usize,
-    pub total_tokens: usize,
-    pub time_to_first_token_ms: f32,
-    pub tokens_per_second: f32,
-    pub total_time_ms: f32,
-    pub cache_hit_rate: f32,
-    pub memory_usage_mb: f32,
-}
-
-/// Batch execution configuration
 #[derive(Debug, Clone)]
 pub struct BatchConfig {
     pub max_batch_size: usize,
@@ -294,7 +262,6 @@ impl Default for BatchConfig {
     }
 }
 
-/// Memory pool configuration
 #[derive(Debug, Clone)]
 pub struct MemoryConfig {
     pub gpu_memory_fraction: f32,
@@ -310,7 +277,7 @@ impl Default for MemoryConfig {
         Self {
             gpu_memory_fraction: 0.9,
             enable_memory_pool: true,
-            kv_cache_block_size: 16, // tokens per block
+            kv_cache_block_size: 16,
             max_kv_cache_blocks: None,
             swap_space_gb: None,
             enable_cpu_offload: false,
@@ -318,7 +285,6 @@ impl Default for MemoryConfig {
     }
 }
 
-/// Cache information (stub)
 #[derive(Debug, Clone)]
 pub struct CacheInfo {
     pub hit_rate: f64,
@@ -328,21 +294,18 @@ pub struct CacheInfo {
     pub prefix_cached: bool,
 }
 
-/// Resource usage information (stub)
 #[derive(Debug, Clone)]
 pub struct ResourceUsage {
     pub gpu_memory_used: usize,
     pub cpu_memory_used: usize,
 }
 
-/// Response metadata (stub)
 #[derive(Debug, Clone)]
 pub struct ResponseMetadata {
     pub model_version: String,
     pub processing_time_ms: f64,
 }
 
-/// Finish reason for generation (stub)
 #[derive(Debug, Clone)]
 pub enum FinishReason {
     Length,

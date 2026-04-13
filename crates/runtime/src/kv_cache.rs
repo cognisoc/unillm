@@ -17,8 +17,9 @@
 //!
 //! This reduces generation to O(n) complexity, providing 50-100x speedup.
 
-use anyhow::Result;
+use crate::model_core::KvCacheProvider;
 use crate::tensor_core::Tensor;
+use anyhow::Result;
 
 /// Default maximum sequence length for pre-allocation
 pub const DEFAULT_MAX_SEQ_LEN: usize = 2048;
@@ -88,7 +89,11 @@ impl LayerKVCache {
     ///
     /// # Returns
     /// Ok(()) on success, Err if buffer overflow
-    pub fn append(&mut self, new_k: &candle_core::Tensor, new_v: &candle_core::Tensor) -> Result<()> {
+    pub fn append(
+        &mut self,
+        new_k: &candle_core::Tensor,
+        new_v: &candle_core::Tensor,
+    ) -> Result<()> {
         let new_len = new_k.dims()[2];
 
         // Lazy allocation on first append
@@ -265,6 +270,23 @@ impl KVCache {
     /// Check if cache is empty
     pub fn is_empty(&self) -> bool {
         self.seq_len == 0
+    }
+}
+
+impl KvCacheProvider for KVCache {
+    fn num_layers(&self) -> usize {
+        self.layers.len()
+    }
+
+    fn seq_len(&self) -> usize {
+        self.seq_len
+    }
+
+    fn clear(&mut self) {
+        for layer in &mut self.layers {
+            layer.clear();
+        }
+        self.seq_len = 0;
     }
 }
 

@@ -5,30 +5,51 @@
 //! - vLLM's PagedAttention for block-level efficiency (L2)
 //! - Compressed storage for cold data (L3)
 
-mod hybrid_cache;
-mod gpu_memory;
 mod gpu_integrated_cache;
+mod gpu_memory;
+mod hybrid_cache;
 
 pub use hybrid_cache::{
-    HybridKVCache, CacheHandle, CacheTier, KVTensorPair, TokenId, SequenceId,
-    RadixCache, AdaptiveCachePolicy, CachePolicy, HybridCacheStats, CacheAnalysis
+    AdaptiveCachePolicy, CacheAnalysis, CacheHandle, CachePolicy, CacheTier, HybridCacheStats,
+    HybridKVCache, KVTensorPair, RadixCache, SequenceId, TokenId,
 };
 
 pub use gpu_memory::{
-    GpuAwareMemoryPool, GpuMemoryBackend, GpuDevicePtr, GpuAllocation,
-    GpuMemoryError, GpuMemoryResult, GpuMemoryStats, GpuDeviceProperties,
-    CudaMemoryBackend, HipMemoryBackend
+    CudaMemoryBackend, GpuAllocation, GpuAwareMemoryPool, GpuDeviceProperties, GpuDevicePtr,
+    GpuMemoryBackend, GpuMemoryError, GpuMemoryResult, GpuMemoryStats, HipMemoryBackend,
 };
 
 pub use gpu_integrated_cache::{
-    GpuIntegratedCache, GpuIntegratedCacheBuilder, GpuIntegratedCacheStats,
-    GpuBackendType
+    GpuBackendType, GpuIntegratedCache, GpuIntegratedCacheBuilder, GpuIntegratedCacheStats,
 };
+
+// Implement KvCacheProvider from runtime for HybridKVCache
+// This bridges the runtime's unified KV cache trait with the kv crate's implementation
+use runtime::model_core::KvCacheProvider;
+
+impl KvCacheProvider for HybridKVCache {
+    fn num_layers(&self) -> usize {
+        32
+    }
+
+    fn seq_len(&self) -> usize {
+        let stats = self.get_stats();
+        (stats.l1_hits + stats.l2_hits + stats.l3_hits) as usize
+    }
+
+    fn clear(&mut self) {
+        let stats = self.get_stats();
+        let l1_mem = stats.memory_usage_l1;
+        let estimated_nodes = l1_mem.max(1000);
+        let new_cache = Self::new(estimated_nodes, 1024, 16, 64, 0);
+        *self = new_cache;
+    }
+}
 
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, VecDeque, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -58,14 +79,14 @@ impl KvPage {
             allocated_at: None,
         }
     }
-    
+
     /// Allocate the page to a sequence
     pub fn allocate(&mut self, seq_id: u32) {
         self.allocated = true;
         self.owner_seq_id = Some(seq_id);
         self.allocated_at = Some(Instant::now());
     }
-    
+
     /// Free the page
     pub fn free(&mut self) {
         self.allocated = false;
@@ -96,7 +117,7 @@ impl KvBlock {
             let device_ptr = base_device_ptr + (i * page_size) as u64;
             pages.push(KvPage::new(page_id, device_ptr));
         }
-        
+
         Self {
             id,
             pages,
@@ -104,7 +125,7 @@ impl KvBlock {
             is_full: false,
         }
     }
-    
+
     /// Allocate a page from this block
     pub fn allocate_page(&mut self, seq_id: u32) -> Option<u32> {
         if self.is_full {
@@ -126,7 +147,7 @@ impl KvBlock {
 
         None
     }
-    
+
     /// Free a page in this block
     pub fn free_page(&mut self, page_id: u32) -> bool {
         for page in &mut self.pages {
@@ -173,12 +194,12 @@ impl KvSequence {
             created_at: Instant::now(),
         }
     }
-    
+
     /// Add a page to this sequence
     pub fn add_page(&mut self, page_id: u32) {
         self.pages.push(page_id);
     }
-    
+
     /// Remove a page from this sequence
     pub fn remove_page(&mut self, page_id: u32) -> bool {
         if let Some(pos) = self.pages.iter().position(|&id| id == page_id) {
@@ -188,13 +209,13 @@ impl KvSequence {
             false
         }
     }
-    
+
     /// Check if sequence needs more pages
     pub fn needs_more_pages(&self, page_size: usize) -> bool {
         let current_capacity = self.pages.len() * page_size;
         current_capacity < self.max_length
     }
-    
+
     /// Get the number of pages needed
     pub fn pages_needed(&self, page_size: usize) -> usize {
         let current_capacity = self.pages.len() * page_size;
@@ -227,7 +248,7 @@ pub struct PagedKvAllocator {
 
 impl PagedKvAllocator {
     /// Create a new paged KV allocator
-    /// 
+    ///
     /// # Arguments
     /// * `total_pages` - Total number of pages to allocate
     /// * `page_size` - Size of each page in tokens
@@ -242,21 +263,22 @@ impl PagedKvAllocator {
         let num_blocks = (total_pages + pages_per_block - 1) / pages_per_block;
         let mut blocks = Vec::new();
         let mut free_pages = VecDeque::new();
-        
+
         for block_id in 0..num_blocks {
-            let pages_in_block = std::cmp::min(pages_per_block, total_pages - block_id * pages_per_block);
+            let pages_in_block =
+                std::cmp::min(pages_per_block, total_pages - block_id * pages_per_block);
             let block_base_ptr = base_device_ptr + (block_id * pages_per_block * page_size) as u64;
-            
+
             let block = KvBlock::new(block_id as u32, pages_in_block, block_base_ptr, page_size);
-            
+
             // Add all pages to free list
             for page in &block.pages {
                 free_pages.push_back(page.id);
             }
-            
+
             blocks.push(block);
         }
-        
+
         Self {
             blocks,
             free_pages,
@@ -269,26 +291,34 @@ impl PagedKvAllocator {
             next_seq_id: 0,
         }
     }
-    
+
     /// Allocate pages for a new sequence
-    /// 
+    ///
     /// # Arguments
     /// * `max_length` - Maximum sequence length
-    /// 
+    ///
     /// # Returns
     /// Sequence ID and allocated page IDs
-    pub fn allocate_sequence(&mut self, max_length: usize) -> Result<(u32, Vec<u32>), Box<dyn std::error::Error>> {
+    pub fn allocate_sequence(
+        &mut self,
+        max_length: usize,
+    ) -> Result<(u32, Vec<u32>), Box<dyn std::error::Error>> {
         let seq_id = self.next_seq_id;
         self.next_seq_id += 1;
-        
+
         let pages_needed = (max_length + self.page_size - 1) / self.page_size;
-        
+
         if self.free_pages.len() < pages_needed {
-            return Err(format!("Not enough free pages: need {}, have {}", pages_needed, self.free_pages.len()).into());
+            return Err(format!(
+                "Not enough free pages: need {}, have {}",
+                pages_needed,
+                self.free_pages.len()
+            )
+            .into());
         }
-        
+
         let mut allocated_pages = Vec::new();
-        
+
         // Allocate pages
         for _ in 0..pages_needed {
             if let Some(page_id) = self.free_pages.pop_front() {
@@ -302,17 +332,22 @@ impl PagedKvAllocator {
                 }
             }
         }
-        
+
         // Create sequence
         let mut sequence = KvSequence::new(seq_id, max_length);
         sequence.pages = allocated_pages.clone();
         self.sequences.insert(seq_id, sequence);
-        
-        println!("Allocated sequence {} with {} pages (max_length: {})", seq_id, allocated_pages.len(), max_length);
-        
+
+        println!(
+            "Allocated sequence {} with {} pages (max_length: {})",
+            seq_id,
+            allocated_pages.len(),
+            max_length
+        );
+
         Ok((seq_id, allocated_pages))
     }
-    
+
     /// Free a sequence and return its pages to the free pool
     pub fn free_sequence(&mut self, seq_id: u32) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(sequence) = self.sequences.remove(&seq_id) {
@@ -327,24 +362,33 @@ impl PagedKvAllocator {
                     }
                 }
             }
-            
+
             println!("Freed sequence {} with {} pages", seq_id, pages_count);
         }
-        
+
         Ok(())
     }
-    
+
     /// Extend a sequence with more pages
-    pub fn extend_sequence(&mut self, seq_id: u32, additional_length: usize) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+    pub fn extend_sequence(
+        &mut self,
+        seq_id: u32,
+        additional_length: usize,
+    ) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
         if let Some(sequence) = self.sequences.get_mut(&seq_id) {
             let additional_pages = (additional_length + self.page_size - 1) / self.page_size;
-            
+
             if self.free_pages.len() < additional_pages {
-                return Err(format!("Not enough free pages for extension: need {}, have {}", additional_pages, self.free_pages.len()).into());
+                return Err(format!(
+                    "Not enough free pages for extension: need {}, have {}",
+                    additional_pages,
+                    self.free_pages.len()
+                )
+                .into());
             }
-            
+
             let mut new_pages = Vec::new();
-            
+
             // Allocate additional pages
             for _ in 0..additional_pages {
                 if let Some(page_id) = self.free_pages.pop_front() {
@@ -358,24 +402,28 @@ impl PagedKvAllocator {
                     }
                 }
             }
-            
-            println!("Extended sequence {} with {} additional pages", seq_id, new_pages.len());
+
+            println!(
+                "Extended sequence {} with {} additional pages",
+                seq_id,
+                new_pages.len()
+            );
             Ok(new_pages)
         } else {
             Err(format!("Sequence {} not found", seq_id).into())
         }
     }
-    
+
     /// Get sequence information
     pub fn get_sequence(&self, seq_id: u32) -> Option<&KvSequence> {
         self.sequences.get(&seq_id)
     }
-    
+
     /// Get all active sequences
     pub fn get_active_sequences(&self) -> Vec<&KvSequence> {
         self.sequences.values().filter(|s| s.is_active).collect()
     }
-    
+
     /// Get memory usage statistics
     pub fn get_stats(&self) -> KvAllocatorStats {
         KvAllocatorStats {
@@ -386,17 +434,17 @@ impl PagedKvAllocator {
             memory_usage_percent: (self.allocated_pages as f64 / self.total_pages as f64) * 100.0,
         }
     }
-    
+
     /// Defragment memory by moving sequences to contiguous pages
     pub fn defragment(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         println!("Starting memory defragmentation...");
-        
+
         // For now, this is a placeholder implementation
         // In a real implementation, we would:
         // 1. Identify fragmented sequences
         // 2. Move pages to create contiguous blocks
         // 3. Update device pointers accordingly
-        
+
         println!("Memory defragmentation completed");
         Ok(())
     }

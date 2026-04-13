@@ -4,11 +4,11 @@
 //! request scheduling based on cache hit potential and memory constraints.
 
 use crate::types::{
-    Request, BatchAnalysis, OptimizationResult, MemoryConstraints,
-    PrefixSharingGroup, OptimizationOpportunity, OptimizationType
+    BatchAnalysis, MemoryConstraints, OptimizationOpportunity, OptimizationResult,
+    OptimizationType, PrefixSharingGroup, Request,
 };
-use kv::{GpuIntegratedCache, TokenId, SequenceId, GpuIntegratedCacheStats};
-use std::collections::{HashMap, BTreeMap};
+use kv::{GpuIntegratedCache, GpuIntegratedCacheStats, SequenceId, TokenId};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -62,7 +62,7 @@ impl CacheAwareAnalyzer {
             requests,
             &prefix_analysis,
             &cache_predictions,
-            &memory_analysis
+            &memory_analysis,
         );
 
         let analysis_time = start_time.elapsed();
@@ -106,10 +106,14 @@ impl CacheAwareAnalyzer {
 
         OptimizationResult {
             requests_reordered: requests.len(),
-            cache_hit_improvement: optimized_analysis.expected_cache_hit_rate - original_analysis.expected_cache_hit_rate,
-            memory_efficiency_gain: self.calculate_memory_efficiency_gain(&original_analysis, &optimized_analysis),
-            expected_latency_reduction: original_analysis.expected_latency - optimized_analysis.expected_latency,
-            prefix_sharing_improvement: optimized_analysis.prefix_sharing_groups.len() as f64 / original_analysis.prefix_sharing_groups.len().max(1) as f64,
+            cache_hit_improvement: optimized_analysis.expected_cache_hit_rate
+                - original_analysis.expected_cache_hit_rate,
+            memory_efficiency_gain: self
+                .calculate_memory_efficiency_gain(&original_analysis, &optimized_analysis),
+            expected_latency_reduction: original_analysis.expected_latency
+                - optimized_analysis.expected_latency,
+            prefix_sharing_improvement: optimized_analysis.prefix_sharing_groups.len() as f64
+                / original_analysis.prefix_sharing_groups.len().max(1) as f64,
             optimization_time,
             success: true,
         }
@@ -141,10 +145,11 @@ impl CacheAwareAnalyzer {
 
                 let common_prefix_len = self.find_common_prefix_length(
                     &requests[i].prompt_tokens,
-                    &requests[j].prompt_tokens
+                    &requests[j].prompt_tokens,
                 );
 
-                if common_prefix_len >= 32 { // Minimum prefix length for sharing
+                if common_prefix_len >= 32 {
+                    // Minimum prefix length for sharing
                     group.requests.push(j);
                     group.common_prefix_length = group.common_prefix_length.min(common_prefix_len);
                     processed[j] = true;
@@ -177,7 +182,11 @@ impl CacheAwareAnalyzer {
     }
 
     /// Predict cache hit rates for requests
-    fn predict_cache_hits(&self, requests: &[Request], cache_stats: &GpuIntegratedCacheStats) -> CachePrediction {
+    fn predict_cache_hits(
+        &self,
+        requests: &[Request],
+        cache_stats: &GpuIntegratedCacheStats,
+    ) -> CachePrediction {
         let mut hit_predictions = Vec::new();
         let mut total_hit_rate = 0.0;
 
@@ -212,13 +221,21 @@ impl CacheAwareAnalyzer {
     }
 
     /// Analyze memory requirements and constraints
-    fn analyze_memory_requirements(&self, requests: &[Request], cache_stats: &GpuIntegratedCacheStats) -> MemoryAnalysis {
-        let total_tokens: usize = requests.iter().map(|r| r.prompt_tokens.len() + r.max_new_tokens).sum();
+    fn analyze_memory_requirements(
+        &self,
+        requests: &[Request],
+        cache_stats: &GpuIntegratedCacheStats,
+    ) -> MemoryAnalysis {
+        let total_tokens: usize = requests
+            .iter()
+            .map(|r| r.prompt_tokens.len() + r.max_new_tokens)
+            .sum();
         let bytes_per_token = 32; // Estimate: 16 bytes K + 16 bytes V
         let total_memory_needed = total_tokens * bytes_per_token;
 
-        let available_memory = 1024*1024*1024 - cache_stats.gpu_memory_usage; // TODO: get real total
-        let memory_utilization = cache_stats.gpu_memory_usage as f64 / (cache_stats.gpu_memory_usage + available_memory) as f64;
+        let available_memory = 1024 * 1024 * 1024 - cache_stats.gpu_memory_usage; // TODO: get real total
+        let memory_utilization = cache_stats.gpu_memory_usage as f64
+            / (cache_stats.gpu_memory_usage + available_memory) as f64;
 
         // Calculate pressure score (0.0 = no pressure, 1.0 = critical)
         let pressure_score = if memory_utilization > 0.9 {
@@ -248,7 +265,11 @@ impl CacheAwareAnalyzer {
         memory_analysis: &MemoryAnalysis,
     ) -> PerformancePrediction {
         // Base latency calculation
-        let avg_prompt_length: f64 = requests.iter().map(|r| r.prompt_tokens.len()).sum::<usize>() as f64 / requests.len() as f64;
+        let avg_prompt_length: f64 = requests
+            .iter()
+            .map(|r| r.prompt_tokens.len())
+            .sum::<usize>() as f64
+            / requests.len() as f64;
         let base_prefill_latency = Duration::from_nanos((avg_prompt_length * 50_000.0) as u64); // 50μs per token estimate
 
         // Cache hit adjustment
@@ -279,30 +300,56 @@ impl CacheAwareAnalyzer {
     }
 
     /// Calculate confidence score for the analysis
-    fn calculate_confidence_score(&self, cache_predictions: &CachePrediction, memory_analysis: &MemoryAnalysis) -> f64 {
-        let cache_confidence = cache_predictions.request_predictions.iter()
+    fn calculate_confidence_score(
+        &self,
+        cache_predictions: &CachePrediction,
+        memory_analysis: &MemoryAnalysis,
+    ) -> f64 {
+        let cache_confidence = cache_predictions
+            .request_predictions
+            .iter()
             .map(|p| p.confidence)
-            .sum::<f64>() / cache_predictions.request_predictions.len() as f64;
+            .sum::<f64>()
+            / cache_predictions.request_predictions.len() as f64;
 
-        let memory_confidence = if memory_analysis.allocation_feasible { 0.9 } else { 0.3 };
+        let memory_confidence = if memory_analysis.allocation_feasible {
+            0.9
+        } else {
+            0.3
+        };
 
         (cache_confidence + memory_confidence) / 2.0
     }
 
     // Helper methods
     fn find_common_prefix_length(&self, tokens1: &[TokenId], tokens2: &[TokenId]) -> usize {
-        tokens1.iter()
+        tokens1
+            .iter()
             .zip(tokens2.iter())
             .take_while(|(a, b)| a == b)
             .count()
     }
 
-    fn calculate_prefix_hit_probability(&self, tokens: &[TokenId], _cache: &GpuIntegratedCache) -> f64 {
+    fn calculate_prefix_hit_probability(
+        &self,
+        tokens: &[TokenId],
+        _cache: &GpuIntegratedCache,
+    ) -> f64 {
         // Simplified implementation - in practice would query actual cache
-        if tokens.len() > 100 { 0.7 } else if tokens.len() > 50 { 0.5 } else { 0.3 }
+        if tokens.len() > 100 {
+            0.7
+        } else if tokens.len() > 50 {
+            0.5
+        } else {
+            0.3
+        }
     }
 
-    fn calculate_cache_hit_potential(&self, _group: &PrefixSharingGroup, _requests: &[Request]) -> f64 {
+    fn calculate_cache_hit_potential(
+        &self,
+        _group: &PrefixSharingGroup,
+        _requests: &[Request],
+    ) -> f64 {
         0.8 // Simplified - would calculate based on actual cache state
     }
 
@@ -321,7 +368,11 @@ impl CacheAwareAnalyzer {
         groups.into_iter().flatten().collect()
     }
 
-    fn calculate_memory_efficiency_gain(&self, _original: &BatchAnalysis, _optimized: &BatchAnalysis) -> f64 {
+    fn calculate_memory_efficiency_gain(
+        &self,
+        _original: &BatchAnalysis,
+        _optimized: &BatchAnalysis,
+    ) -> f64 {
         0.15 // Simplified - would calculate actual efficiency gain
     }
 }
