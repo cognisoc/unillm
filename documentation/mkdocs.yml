@@ -1,8 +1,9 @@
 site_name: UniLLM Documentation
 site_description: High-performance Rust-based LLM inference engine with solid abstractions
-site_url: https://unillm.dev
+site_url: https://docs.cognisoc.com/unillm/
 repo_url: https://github.com/cognisoc/unillm
-repo_name: unillm
+repo_name: cognisoc/unillm
+edit_uri: edit/main/documentation/docs/
 
 theme:
   name: material
