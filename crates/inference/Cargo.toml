@@ -3,7 +3,7 @@ name = "unillm-inference"
 version = "0.1.0"
 edition = "2021"
 description = "High-level inference engine for UniLLM"
-license = "Apache-2.0"
+license = "MIT"
 repository = "https://github.com/cognisoc/unillm"
 readme = "../../README.md"
 
