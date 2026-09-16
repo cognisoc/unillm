@@ -24,8 +24,8 @@ cargo build --features cuda,metal -p unillm-runtime
 # Run basic inference test
 cargo run --bin test_basic_inference -p unillm-runtime
 
-# Run CLI
-cargo run --bin unillm -p unillm-runtime -- generate --prompt "Hello"
+# Run CLI (lives in the unillm-bin crate)
+cargo run --bin unillm -p unillm-bin -- --prompt "Hello"
 
 # Build optimized release
 cargo build --release --profile gpu-optimized
@@ -105,6 +105,7 @@ impl Model for YourModelV2 {
 - **`crates/inference/`** - High-level inference engine components
 - **`crates/kv/`** - KV cache and memory management
 - **`crates/scheduler/`** - Request scheduling and batching
+- **`crates/unillm-bin/`** - `unillm` CLI binary (generate, interactive chat, `serve`, `pull`, `list`)
 
 ## Key Implementation Notes
 

@@ -45,13 +45,20 @@ cargo test --workspace # run all tests
 
 ```bash
 # Generate text (downloads TinyLlama on first run, ~600MB)
-cargo run --bin unillm -p unillm-runtime -- generate --prompt "Explain gravity"
+cargo run --bin unillm -p unillm-bin -- --prompt "Explain gravity"
 
 # Use a different model
-cargo run --bin unillm -p unillm-runtime -- generate --model llama2:7b --prompt "Hello"
+cargo run --bin unillm -p unillm-bin -- --model llama2:7b --prompt "Hello"
 
-# List cached models
-cargo run --bin unillm -p unillm-runtime -- models
+# Interactive chat, with sampling controls
+cargo run --bin unillm -p unillm-bin -- --model llama2:7b --interactive --temp 0.7 --top-p 0.9
+
+# Serve an OpenAI-compatible HTTP API
+cargo run --bin unillm -p unillm-bin -- serve --model llama2:7b --port 8080
+
+# Pull a model, then list what is cached
+cargo run --bin unillm -p unillm-bin -- pull tinyllama:latest
+cargo run --bin unillm -p unillm-bin -- list
 ```
 
 ## Architecture

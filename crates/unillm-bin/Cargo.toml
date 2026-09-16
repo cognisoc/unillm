@@ -2,14 +2,18 @@
 name = "unillm-bin"
 version = "0.1.0"
 edition = "2021"
+description = "Command-line interface for the UniLLM inference runtime"
+license = "MIT"
+repository = "https://github.com/cognisoc/unillm"
+readme = "../../README.md"
 
 [[bin]]
 name = "unillm"
 path = "src/main.rs"
 
 [dependencies]
-runtime = { path = "../runtime" }
-inference = { path = "../inference" }
+runtime = { package = "unillm-runtime", path = "../runtime", version = "0.1.0" }
+inference = { package = "unillm-inference", path = "../inference", version = "0.1.0" }
 
 anyhow = "1.0"
 clap = { version = "4.0", features = ["derive"] }
